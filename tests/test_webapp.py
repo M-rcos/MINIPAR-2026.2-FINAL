@@ -1,6 +1,13 @@
 """Testes da camada de serviço usada pela interface Web didática."""
+import json
+import subprocess
 import unittest
-from minipar.webapp import analyze_source
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from minipar.webapp import analyze_source, run_source
+
 
 class WebAppServiceTests(unittest.TestCase):
     def test_pipeline_returns_all_compilation_stages(self):
@@ -26,6 +33,23 @@ class WebAppServiceTests(unittest.TestCase):
         self.assertEqual(result["stages"]["semantic"], "error")
         self.assertEqual(result["stages"]["tac"], "pending")
         self.assertEqual(result["cpp"], "")
+
+    def test_execution_timeout_preserves_partial_byte_output_as_json_text(self):
+        timeout_error = subprocess.TimeoutExpired(
+            cmd=["programa"], timeout=10, output=b"saida parcial"
+        )
+        fake_build = SimpleNamespace(exe_path=Path("programa"))
+        with patch("minipar.webapp.build_executable", return_value=fake_build), \
+             patch("minipar.webapp.subprocess.run", side_effect=timeout_error):
+            result = run_source('print("teste");')
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["timeout"])
+        self.assertEqual(result["stdout"], "saida parcial")
+        self.assertIn("10 segundos", result["stderr"])
+        # A resposta precisa continuar serializável pelo endpoint HTTP.
+        json.dumps(result, ensure_ascii=False)
+
 
 if __name__ == "__main__":
     unittest.main()
