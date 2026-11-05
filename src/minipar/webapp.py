@@ -1,6 +1,6 @@
 """Interface Web didática local do MiniPar 2026.2."""
 from __future__ import annotations
-import argparse, ipaddress, json, subprocess, tempfile, threading
+import argparse, ipaddress, json, os, signal, subprocess, tempfile, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -17,6 +17,8 @@ MAX_SOURCE_BYTES = 128 * 1024
 COMPILE_TIMEOUT_SECONDS = 20
 RUN_TIMEOUT_SECONDS = 10
 MAX_CONCURRENT_RUNS = 2
+MAX_OUTPUT_BYTES = 1024 * 1024
+_OUTPUT_CHUNK_BYTES = 8192
 _RUN_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_RUNS)
 
 def analyze_source(source: str) -> dict:
@@ -57,6 +59,84 @@ def analyze_source(source: str) -> dict:
     result["ok"] = True
     return result
 
+def _stop_process_tree(proc: subprocess.Popen) -> None:
+    """Encerra o processo e, em POSIX, todo o grupo iniciado para ele."""
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _run_bounded_process(command: list[str], cwd: Path, timeout: int) -> dict:
+    """Executa drenando os dois pipes e limitando a saída total em bytes."""
+    proc = subprocess.Popen(
+        command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        bufsize=0, start_new_session=(os.name == "posix"),
+    )
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    state = {"total": 0, "limit": False}
+    lock = threading.Lock()
+
+    def drain(pipe, key):
+        try:
+            while True:
+                chunk = pipe.read(_OUTPUT_CHUNK_BYTES)
+                if not chunk:
+                    break
+                with lock:
+                    remaining = MAX_OUTPUT_BYTES - state["total"]
+                    if remaining > 0:
+                        kept = chunk[:remaining]
+                        captured[key].extend(kept)
+                        state["total"] += len(kept)
+                    if len(chunk) > max(remaining, 0):
+                        state["limit"] = True
+                if state["limit"]:
+                    _stop_process_tree(proc)
+        finally:
+            pipe.close()
+
+    readers = [
+        threading.Thread(target=drain, args=(proc.stdout, "stdout"), daemon=True),
+        threading.Thread(target=drain, args=(proc.stderr, "stderr"), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _stop_process_tree(proc)
+        proc.wait()
+
+    for reader in readers:
+        reader.join()
+
+    stdout = bytes(captured["stdout"]).decode("utf-8", errors="replace")
+    stderr = bytes(captured["stderr"]).decode("utf-8", errors="replace")
+    if timed_out:
+        stderr = (stderr + f"\\nExecução interrompida após {timeout} segundos.").strip()
+        return {"ok": False, "stdout": stdout, "stderr": stderr,
+                "returncode": None, "timeout": True, "stage": "run"}
+    if state["limit"]:
+        notice = f"Saída interrompida: limite de {MAX_OUTPUT_BYTES // 1024} KiB atingido."
+        stderr = (stderr + "\\n" + notice).strip()
+        return {"ok": False, "stdout": stdout, "stderr": stderr,
+                "returncode": proc.returncode, "output_limit": True}
+    return {"ok": proc.returncode == 0, "stdout": stdout,
+            "stderr": stderr, "returncode": proc.returncode}
+
+
 def run_source(source: str, timeout: int = RUN_TIMEOUT_SECONDS) -> dict:
     """Compila e executa em pasta temporária, limitando o tempo de execução."""
     with tempfile.TemporaryDirectory(prefix="minipar-web-") as temp:
@@ -74,18 +154,9 @@ def run_source(source: str, timeout: int = RUN_TIMEOUT_SECONDS) -> dict:
             return {"ok": False, "stdout": "", "stderr": str(exc),
                     "returncode": None, "stage": "compile"}
         try:
-            proc = subprocess.run([str(build.exe_path.resolve())], cwd=work,
-                                  capture_output=True, text=True, timeout=timeout, check=False)
-            return {"ok": proc.returncode == 0, "stdout": proc.stdout,
-                    "stderr": proc.stderr, "returncode": proc.returncode}
-        except subprocess.TimeoutExpired as exc:
-            # TimeoutExpired pode carregar stdout como bytes mesmo com text=True.
-            partial_stdout = exc.stdout or ""
-            if isinstance(partial_stdout, bytes):
-                partial_stdout = partial_stdout.decode("utf-8", errors="replace")
-            return {"ok": False, "stdout": partial_stdout,
-                    "stderr": f"Execução interrompida após {timeout} segundos.",
-                    "returncode": None, "timeout": True, "stage": "run"}
+            return _run_bounded_process(
+                [str(build.exe_path.resolve())], work, timeout
+            )
         except Exception as exc:
             return {"ok": False, "stdout": "", "stderr": str(exc), "returncode": None}
 
