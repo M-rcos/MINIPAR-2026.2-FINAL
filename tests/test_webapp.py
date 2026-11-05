@@ -79,6 +79,29 @@ class WebAppServiceTests(unittest.TestCase):
         handler.headers = {"Host": "example.com:8765"}
         self.assertFalse(handler._is_local_request())
 
+    def test_local_request_rejects_missing_origin(self):
+        from minipar.webapp import MiniParHandler
+
+        handler = MiniParHandler.__new__(MiniParHandler)
+        handler.headers = {
+            "Host": "127.0.0.1:8765",
+            "Sec-Fetch-Site": "same-origin",
+        }
+        self.assertFalse(handler._is_local_request())
+
+    def test_web_limits_concurrent_runs(self):
+        from minipar.webapp import MAX_CONCURRENT_RUNS, _RUN_SLOTS
+
+        acquired = []
+        try:
+            for _ in range(MAX_CONCURRENT_RUNS):
+                acquired.append(_RUN_SLOTS.acquire(blocking=False))
+            self.assertTrue(all(acquired))
+            self.assertFalse(_RUN_SLOTS.acquire(blocking=False))
+        finally:
+            for _ in acquired:
+                _RUN_SLOTS.release()
+
     def test_local_request_rejects_cross_origin(self):
         from minipar.webapp import MiniParHandler
 
