@@ -291,7 +291,7 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         return node
 
     def _analyze_function_effects(self, program: Program) -> None:
-        """Calcula efeitos globais e mutações de parâmetros, inclusive transitivas."""
+        """Calcula efeitos globais, parâmetros mutáveis e aliases locais."""
         self._global_names = {
             node.name for node in program.body if isinstance(node, VarDecl)
         }
@@ -317,32 +317,65 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             for name in declarations
         }
         calls = {name: [] for name in declarations}
+        aliases: Dict[str, Dict[str, set]] = {}
 
         for name, declaration in declarations.items():
             param_index = {p.name: i for i, p in enumerate(declaration.params)}
-            for item in self._walk_ast(declaration.body):
+            local_aliases: Dict[str, set] = {}
+
+            def origins(expr):
+                root = self._root_expression(expr)
+                if isinstance(root, Identifier):
+                    if root.name in self._global_names:
+                        return {("global", root.name)}
+                    if root.name in param_index:
+                        return {("param", param_index[root.name])}
+                    return set(local_aliases.get(root.name, set()))
+                if isinstance(root, This):
+                    return {("receiver", None)}
+                return set()
+
+            # Resolve aliases locais até estabilizar (inclui cadeias: a=b; b=param).
+            ast_nodes = list(self._walk_ast(declaration.body))
+            changed_alias = True
+            while changed_alias:
+                changed_alias = False
+                for item in ast_nodes:
+                    if isinstance(item, VarDecl) and item.init is not None:
+                        found = origins(item.init)
+                        before = len(local_aliases.get(item.name, set()))
+                        local_aliases.setdefault(item.name, set()).update(found)
+                        changed_alias |= len(local_aliases[item.name]) != before
+                    elif (isinstance(item, Assign)
+                          and isinstance(item.target, Identifier)):
+                        found = origins(item.value)
+                        before = len(local_aliases.get(item.target.name, set()))
+                        local_aliases.setdefault(item.target.name, set()).update(found)
+                        changed_alias |= len(local_aliases[item.target.name]) != before
+            aliases[name] = local_aliases
+
+            def record_mutation(expr):
+                for kind, value in origins(expr):
+                    if kind == "global":
+                        effects[name]["globals"].add(value)
+                    elif kind == "param":
+                        effects[name]["params"].add(value)
+                    elif kind == "receiver":
+                        effects[name]["receiver"] = True
+
+            for item in ast_nodes:
                 if isinstance(item, Assign):
                     root = self._root_expression(item.target)
-                    is_object_write = isinstance(item.target, (Member, Index))
                     if isinstance(root, Identifier):
                         if root.name in self._global_names:
                             effects[name]["globals"].add(root.name)
-                        elif is_object_write and root.name in param_index:
-                            effects[name]["params"].add(param_index[root.name])
-                    elif isinstance(root, This) and is_object_write:
+                        elif isinstance(item.target, (Member, Index)):
+                            record_mutation(item.target)
+                    elif isinstance(root, This) and isinstance(item.target, (Member, Index)):
                         effects[name]["receiver"] = True
                 elif isinstance(item, MethodCall):
-                    root = self._root_expression(item.obj)
-                    if item.name in {"append", "push_back", "pop"}:
-                        if isinstance(root, Identifier):
-                            if root.name in self._global_names:
-                                effects[name]["globals"].add(root.name)
-                            elif root.name in param_index:
-                                effects[name]["params"].add(param_index[root.name])
-                        elif isinstance(root, This):
-                            effects[name]["receiver"] = True
-                    # Liga chamadas de métodos de usuário. Sem resolução de tipo
-                    # nesta etapa, consideramos todas as implementações homônimas.
+                    if item.name in LIST_METHODS and item.name != "size":
+                        record_mutation(item.obj)
                     method_targets = [
                         key for key in declarations if key.endswith("." + item.name)
                     ]
@@ -355,30 +388,39 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         while changed:
             changed = False
             for caller, edges in calls.items():
+                current = effects[caller]
+                caller_aliases = aliases[caller]
                 caller_params = {
                     p.name: i for i, p in enumerate(declarations[caller].params)
                 }
-                current = effects[caller]
+
+                def propagate(expr):
+                    root = self._root_expression(expr)
+                    found = set()
+                    if isinstance(root, Identifier):
+                        if root.name in self._global_names:
+                            found.add(("global", root.name))
+                        elif root.name in caller_params:
+                            found.add(("param", caller_params[root.name]))
+                        else:
+                            found.update(caller_aliases.get(root.name, set()))
+                    elif isinstance(root, This):
+                        found.add(("receiver", None))
+                    before = (len(current["globals"]), len(current["params"]),
+                              current["receiver"])
+                    for kind, value in found:
+                        if kind == "global":
+                            current["globals"].add(value)
+                        elif kind == "param":
+                            current["params"].add(value)
+                        elif kind == "receiver":
+                            current["receiver"] = True
+                    after = (len(current["globals"]), len(current["params"]),
+                             current["receiver"])
+                    return before != after
+
                 for callee, args, receiver in edges:
                     callee_effect = effects[callee]
-
-                    def propagate(expr):
-                        root = self._root_expression(expr)
-                        if isinstance(root, Identifier):
-                            if root.name in self._global_names:
-                                if root.name not in current["globals"]:
-                                    current["globals"].add(root.name)
-                                    return True
-                            elif root.name in caller_params:
-                                index = caller_params[root.name]
-                                if index not in current["params"]:
-                                    current["params"].add(index)
-                                    return True
-                        elif isinstance(root, This) and not current["receiver"]:
-                            current["receiver"] = True
-                            return True
-                        return False
-
                     for index in callee_effect["params"]:
                         if index < len(args):
                             changed |= propagate(args[index])
