@@ -125,12 +125,12 @@ def _run_bounded_process(command: list[str], cwd: Path, timeout: int) -> dict:
     stdout = bytes(captured["stdout"]).decode("utf-8", errors="replace")
     stderr = bytes(captured["stderr"]).decode("utf-8", errors="replace")
     if timed_out:
-        stderr = (stderr + f"\\nExecução interrompida após {timeout} segundos.").strip()
+        stderr = (stderr + f"\nExecução interrompida após {timeout} segundos.").strip()
         return {"ok": False, "stdout": stdout, "stderr": stderr,
                 "returncode": None, "timeout": True, "stage": "run"}
     if state["limit"]:
         notice = f"Saída interrompida: limite de {MAX_OUTPUT_BYTES // 1024} KiB atingido."
-        stderr = (stderr + "\\n" + notice).strip()
+        stderr = (stderr + "\n" + notice).strip()
         return {"ok": False, "stdout": stdout, "stderr": stderr,
                 "returncode": proc.returncode, "output_limit": True}
     return {"ok": proc.returncode == 0, "stdout": stdout,
