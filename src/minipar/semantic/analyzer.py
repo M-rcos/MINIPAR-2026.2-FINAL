@@ -336,26 +336,10 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                     return {("receiver", None)}
                 return set()
 
-            # Resolve aliases locais com transferência sequencial: uma
-            # reatribuição substitui a origem anterior, em vez de acumulá-la.
-            # Repetimos para resolver cadeias que dependem de uma atribuição
-            # posterior (a=b; b=param), preservando o efeito de "kill".
+            # Analisa aliases na ordem do código. Cada atribuição substitui
+            # a origem anterior, e os efeitos/calls guardam a origem existente
+            # exatamente no ponto em que ocorrem.
             ast_nodes = list(self._walk_ast(declaration.body))
-            previous_aliases: Dict[str, set] = {}
-            while True:
-                local_aliases = {
-                    alias: set(found) for alias, found in previous_aliases.items()
-                }
-                for item in ast_nodes:
-                    if isinstance(item, VarDecl) and item.init is not None:
-                        local_aliases[item.name] = origins(item.init)
-                    elif (isinstance(item, Assign)
-                          and isinstance(item.target, Identifier)):
-                        local_aliases[item.target.name] = origins(item.value)
-                if local_aliases == previous_aliases:
-                    break
-                previous_aliases = local_aliases
-            aliases[name] = local_aliases
 
             def record_mutation(expr):
                 for kind, value in origins(expr):
@@ -367,13 +351,17 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                         effects[name]["receiver"] = True
 
             for item in ast_nodes:
-                if isinstance(item, Assign):
+                if isinstance(item, VarDecl) and item.init is not None:
+                    local_aliases[item.name] = origins(item.init)
+                elif isinstance(item, Assign):
                     root = self._root_expression(item.target)
                     if isinstance(root, Identifier):
                         if root.name in self._global_names:
                             effects[name]["globals"].add(root.name)
                         elif isinstance(item.target, (Member, Index)):
                             record_mutation(item.target)
+                        else:
+                            local_aliases[root.name] = origins(item.value)
                     elif isinstance(root, This) and isinstance(item.target, (Member, Index)):
                         effects[name]["receiver"] = True
                 elif isinstance(item, MethodCall):
@@ -383,32 +371,26 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                         key for key in declarations if key.endswith("." + item.name)
                     ]
                     for target in method_targets:
-                        calls[name].append((target, item.args, item.obj))
+                        calls[name].append((
+                            target,
+                            [origins(arg) for arg in item.args],
+                            origins(item.obj),
+                        ))
                 elif isinstance(item, Call) and item.name in declarations:
-                    calls[name].append((item.name, item.args, None))
+                    calls[name].append((
+                        item.name,
+                        [origins(arg) for arg in item.args],
+                        set(),
+                    ))
+            aliases[name] = local_aliases
 
         changed = True
         while changed:
             changed = False
             for caller, edges in calls.items():
                 current = effects[caller]
-                caller_aliases = aliases[caller]
-                caller_params = {
-                    p.name: i for i, p in enumerate(declarations[caller].params)
-                }
 
-                def propagate(expr):
-                    root = self._root_expression(expr)
-                    found = set()
-                    if isinstance(root, Identifier):
-                        if root.name in self._global_names:
-                            found.add(("global", root.name))
-                        elif root.name in caller_params:
-                            found.add(("param", caller_params[root.name]))
-                        else:
-                            found.update(caller_aliases.get(root.name, set()))
-                    elif isinstance(root, This):
-                        found.add(("receiver", None))
+                def propagate_origins(found):
                     before = (len(current["globals"]), len(current["params"]),
                               current["receiver"])
                     for kind, value in found:
@@ -422,13 +404,13 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                              current["receiver"])
                     return before != after
 
-                for callee, args, receiver in edges:
+                for callee, arg_origins, receiver_origins in edges:
                     callee_effect = effects[callee]
                     for index in callee_effect["params"]:
-                        if index < len(args):
-                            changed |= propagate(args[index])
-                    if callee_effect["receiver"] and receiver is not None:
-                        changed |= propagate(receiver)
+                        if index < len(arg_origins):
+                            changed |= propagate_origins(arg_origins[index])
+                    if callee_effect["receiver"]:
+                        changed |= propagate_origins(receiver_origins)
                     before = len(current["globals"])
                     current["globals"].update(callee_effect["globals"])
                     changed |= len(current["globals"]) != before
