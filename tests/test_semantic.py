@@ -388,6 +388,22 @@ class TestCanaisEParalelismo(unittest.TestCase):
                  "var c = new C(); fork t { c.alterar(); }")
         self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
 
+    def test_fork_bloqueia_mutacao_de_global_por_parametro(self):
+        m = msgs("var lista = [1]; func adicionar(xs) { xs.append(2); } "
+                 "fork t { adicionar(lista); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_mutacao_de_global_por_parametro_transitivo(self):
+        m = msgs("var lista = [1]; func adicionar(xs) { xs.append(2); } "
+                 "func encaminhar(ys) { adicionar(ys); } "
+                 "fork t { encaminhar(lista); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_mutacao_do_receptor_global_por_this(self):
+        m = msgs("class C { var x = 0; func alterar() { this.x = 1; } } "
+                 "var objeto = new C(); fork t { objeto.alterar(); }")
+        self.assertTrue(any("objeto" in x and "subtarefa" in x for x in m))
+
     def test_subtarefa_pode_ler_variavel_externa_e_ter_variaveis_proprias(self):
         ok("var x = 1; fork t { var y = x + 1; y = y + 1; print(y); }")
 
