@@ -10,27 +10,27 @@ arquitetura por componentes, gerando C++ compilado com GCC.
 - Make (opcional; os comandos também podem ser executados diretamente)
 
 Windows: instale Python 3 e MSYS2; no terminal MSYS2 UCRT64 instale
-\`mingw-w64-ucrt-x86_64-gcc\` e adicione \`C:\\msys64\\ucrt64\\bin\` ao PATH.
-Use \`python run_tests.py\` no lugar de \`make test\`.
+`mingw-w64-ucrt-x86_64-gcc` e adicione `C:\msys64\ucrt64\bin` ao PATH.
+Use `python run_tests.py` no lugar de `make test`.
 
 ## Estrutura
 
-- \`src/minipar/common/\`: erros compartilhados
-- \`src/minipar/lexer/\`: analisador léxico
-- \`src/minipar/parser/\`: parser, AST, visitor e printer
-- \`src/minipar/symtable/\`: tabela de símbolos e escopos
-- \`src/minipar/semantic/\`: analisador semântico
-- \`src/minipar/tac/\`: gerador de código de três endereços
-- \`src/minipar/codegen/\`: gerador C++, runtime e integração GCC
-- \`src/minipar/webapp.py\` e \`web/\`: segunda interface Web didática
-- \`tests/\`: testes automatizados
-- \`exemplos/\`: programas MiniPar e saídas de referência
-- \`docs/\`: gramática, regras, arquitetura e documentação
-- \`evidencias/\`: capturas reais de execução para o relatório
+- `src/minipar/common/`: erros compartilhados
+- `src/minipar/lexer/`: analisador léxico
+- `src/minipar/parser/`: parser, AST, visitor e printer
+- `src/minipar/symtable/`: tabela de símbolos e escopos
+- `src/minipar/semantic/`: analisador semântico
+- `src/minipar/tac/`: gerador de código de três endereços
+- `src/minipar/codegen/`: gerador C++, runtime e integração GCC
+- `src/minipar/webapp.py` e `web/`: segunda interface Web didática
+- `tests/`: testes automatizados
+- `exemplos/`: programas MiniPar e saídas de referência
+- `docs/`: gramática, regras, arquitetura e documentação
+- `evidencias/`: capturas reais de execução para o relatório
 
 ## Uso da CLI
 
-\`\`\`bash
+```bash
 make test
 make tokens F=exemplos/teste02_par_fatorial_fibonacci.mp
 make ast F=exemplos/teste03_neuronio.mp
@@ -38,14 +38,14 @@ make check F=exemplos/teste03_neuronio.mp
 make tac F=exemplos/teste07_quicksort_iterativo.mp
 make cpp F=exemplos/teste03_neuronio.mp
 make run F=exemplos/teste03_neuronio.mp
-\`\`\`
+```
 
 ## Segunda interface Web
 
-Execute \`make web\` e abra http://127.0.0.1:8765. A interface permite editar MiniPar,
+Execute `make web` e abra http://127.0.0.1:8765. A interface permite editar MiniPar,
 carregar exemplos e inspecionar tokens, AST, análise semântica, TAC e C++.
 Também permite compilar e executar localmente (requer GCC). O servidor escuta
-somente em loopback por padrão. Consulte \`docs/INTERFACE_WEB.md\`.
+somente em loopback por padrão. Consulte `docs/INTERFACE_WEB.md`.
 
 ## Estado
 
@@ -55,4 +55,4 @@ somente em loopback por padrão. Consulte \`docs/INTERFACE_WEB.md\`.
 - [x] Programas de teste e exemplos
 - [x] Canais e fork/join
 - [x] Interface Web didática adicional (em validação)
-- [ ] Capturas reais da interface e evidências passo a passo
+- [x] Capturas reais da interface registradas em `evidencias/interface-web/` (7 arquivos; uma captura reúne duas etapas)
