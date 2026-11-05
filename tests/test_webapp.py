@@ -56,6 +56,25 @@ class WebAppServiceTests(unittest.TestCase):
 
 
 
+    def test_bounded_process_timeout_preserves_partial_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = _run_bounded_process(
+                [sys.executable, "-c",
+                 "import os, time; os.write(1, b'saida parcial\\xff'); "
+                 "os.write(2, b'erro parcial'); time.sleep(2)"],
+                Path(temp), timeout=0.2,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["timeout"])
+        self.assertEqual(result["stage"], "run")
+        self.assertIn("saida parcial", result["stdout"])
+        self.assertIn("\\ufffd", result["stdout"])
+        self.assertIn("erro parcial", result["stderr"])
+        self.assertIn("0.2 segundos", result["stderr"])
+        # Bytes arbitrários precisam virar texto UTF-8 serializável no endpoint.
+        json.dumps(result, ensure_ascii=False)
+
     def test_execution_output_is_capped_across_both_streams(self):
         import minipar.webapp as webapp
 
