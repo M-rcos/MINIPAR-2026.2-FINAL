@@ -1,6 +1,6 @@
 """Interface Web didática local do MiniPar 2026.2."""
 from __future__ import annotations
-import argparse, json, subprocess, tempfile
+import argparse, ipaddress, json, subprocess, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -77,6 +77,27 @@ def run_source(source: str, timeout: int = 10) -> dict:
             return {"ok": False, "stdout": "", "stderr": str(exc), "returncode": None}
 
 class MiniParHandler(BaseHTTPRequestHandler):
+    def _is_local_request(self):
+        """Aceita apenas chamadas same-origin feitas pelo host local."""
+        host_header = self.headers.get("Host", "")
+        hostname = urlparse("//" + host_header).hostname
+        if not hostname:
+            return False
+        try:
+            is_loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            is_loopback = hostname.lower() == "localhost"
+        if not is_loopback:
+            return False
+
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed_origin = urlparse(origin)
+            if parsed_origin.scheme != "http" or parsed_origin.netloc.lower() != host_header.lower():
+                return False
+
+        fetch_site = self.headers.get("Sec-Fetch-Site", "").lower()
+        return fetch_site in ("", "same-origin", "none")
     server_version = "MiniParWeb/1.0"
     def _json(self, data: dict, status: int = 200):
         payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -115,6 +136,8 @@ class MiniParHandler(BaseHTTPRequestHandler):
             return self._json({"source": candidate.read_text(encoding="utf-8")})
         self.send_error(404)
     def do_POST(self):
+        if not self._is_local_request():
+            return self._json({"error": "Requisição cross-origin bloqueada."}, 403)
         path = urlparse(self.path).path
         if path not in ("/api/analyze", "/api/run"):
             return self._json({"error": "Rota não encontrada."}, 404)
