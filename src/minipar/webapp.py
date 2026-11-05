@@ -1,6 +1,6 @@
 """Interface Web didática local do MiniPar 2026.2."""
 from __future__ import annotations
-import argparse, ipaddress, json, subprocess, tempfile
+import argparse, ipaddress, json, subprocess, tempfile, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -16,6 +16,8 @@ WEB_DIR, EXAMPLES_DIR = ROOT / "web", ROOT / "exemplos"
 MAX_SOURCE_BYTES = 128 * 1024
 COMPILE_TIMEOUT_SECONDS = 20
 RUN_TIMEOUT_SECONDS = 10
+MAX_CONCURRENT_RUNS = 2
+_RUN_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_RUNS)
 
 def analyze_source(source: str) -> dict:
     """Executa as fases em ordem e devolve dados serializáveis para a UI."""
@@ -102,10 +104,11 @@ class MiniParHandler(BaseHTTPRequestHandler):
             return False
 
         origin = self.headers.get("Origin")
-        if origin:
-            parsed_origin = urlparse(origin)
-            if parsed_origin.scheme != "http" or parsed_origin.netloc.lower() != host_header.lower():
-                return False
+        if not origin:
+            return False
+        parsed_origin = urlparse(origin)
+        if parsed_origin.scheme != "http" or parsed_origin.netloc.lower() != host_header.lower():
+            return False
 
         fetch_site = self.headers.get("Sec-Fetch-Site", "").lower()
         return fetch_site in ("", "same-origin", "none")
@@ -170,7 +173,12 @@ class MiniParHandler(BaseHTTPRequestHandler):
         if path == "/api/analyze":
             try: return self._json(analyze_source(source))
             except Exception as exc: return self._json({"ok": False, "error": str(exc)}, 500)
-        return self._json(run_source(source))
+        if not _RUN_SLOTS.acquire(blocking=False):
+            return self._json({"ok": False, "error": "Limite de execuções simultâneas atingido. Tente novamente."}, 429)
+        try:
+            return self._json(run_source(source))
+        finally:
+            _RUN_SLOTS.release()
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Interface Web local do MiniPar 2026.2")
