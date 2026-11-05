@@ -89,11 +89,13 @@ class WebAppServiceTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertTrue(result["output_limit"])
+        notice = "Saída interrompida: limite de 0 KiB atingido."
+        self.assertTrue(result["stderr"].endswith(notice))
+        captured_stderr = result["stderr"][:-len(notice)].removesuffix("\n")
         self.assertLessEqual(
-            len(result["stdout"].encode()) + len(result["stderr"].encode()),
-            128 + len("Saída interrompida: limite de 0 KiB atingido.".encode()),
+            len(result["stdout"].encode()) + len(captured_stderr.encode()),
+            128,
         )
-        self.assertIn("limite", result["stderr"])
 
     def test_compilation_timeout_returns_distinct_stage(self):
         timeout_error = subprocess.TimeoutExpired(cmd=["g++"], timeout=20)
