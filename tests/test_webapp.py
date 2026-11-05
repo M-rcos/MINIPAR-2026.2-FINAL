@@ -52,6 +52,17 @@ class WebAppServiceTests(unittest.TestCase):
 
 
 
+    def test_compilation_timeout_returns_distinct_stage(self):
+        timeout_error = subprocess.TimeoutExpired(cmd=["g++"], timeout=20)
+        with patch("minipar.webapp.build_executable", side_effect=timeout_error):
+            result = run_source('print("teste");')
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["timeout"])
+        self.assertEqual(result["stage"], "compile")
+        self.assertIn("20 segundos", result["stderr"])
+        json.dumps(result, ensure_ascii=False)
+
     def test_local_request_rejects_non_loopback_host(self):
         from minipar.webapp import MiniParHandler
 
