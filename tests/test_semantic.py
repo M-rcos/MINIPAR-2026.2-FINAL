@@ -433,7 +433,7 @@ class TestCanaisEParalelismo(unittest.TestCase):
 
     def test_par_bloqueia_alias_local_atribuido_depois(self):
         m = msgs("var lista = [1]; func adicionar(xs) { xs.pop(); } "
-                 "par { var copia; copia = lista; adicionar(copia); }")
+                 "par { seq { var copia; copia = lista; adicionar(copia); } }")
         self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
 
     def test_subtarefa_pode_ler_variavel_externa_e_ter_variaveis_proprias(self):
