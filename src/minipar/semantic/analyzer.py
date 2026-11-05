@@ -1024,6 +1024,9 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
 
         if ot == UNKNOWN:
             return UNKNOWN
+        if ot == LIST and name in {"append", "push_back", "pop"}:
+            self._check_isolation(node.obj)
+
         if ot in self.classes:
             m = self._find_method(ot, name)
             if m is None:
