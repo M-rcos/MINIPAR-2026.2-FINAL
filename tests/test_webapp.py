@@ -99,8 +99,9 @@ class WebAppServiceTests(unittest.TestCase):
             self.assertTrue(all(acquired))
             self.assertFalse(_RUN_SLOTS.acquire(blocking=False))
         finally:
-            for _ in acquired:
-                _RUN_SLOTS.release()
+            for held in acquired:
+                if held:
+                    _RUN_SLOTS.release()
 
     def test_local_request_rejects_cross_origin(self):
         from minipar.webapp import MiniParHandler
