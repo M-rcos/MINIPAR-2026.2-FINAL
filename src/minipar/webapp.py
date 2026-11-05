@@ -68,6 +68,9 @@ def run_source(source: str, timeout: int = RUN_TIMEOUT_SECONDS) -> dict:
             return {"ok": False, "stdout": "",
                     "stderr": f"Compilação interrompida após {COMPILE_TIMEOUT_SECONDS} segundos.",
                     "returncode": None, "timeout": True, "stage": "compile"}
+        except Exception as exc:
+            return {"ok": False, "stdout": "", "stderr": str(exc),
+                    "returncode": None, "stage": "compile"}
         try:
             proc = subprocess.run([str(build.exe_path.resolve())], cwd=work,
                                   capture_output=True, text=True, timeout=timeout, check=False)
