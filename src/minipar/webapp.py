@@ -66,7 +66,11 @@ def run_source(source: str, timeout: int = 10) -> dict:
             return {"ok": proc.returncode == 0, "stdout": proc.stdout,
                     "stderr": proc.stderr, "returncode": proc.returncode}
         except subprocess.TimeoutExpired as exc:
-            return {"ok": False, "stdout": exc.stdout or "",
+            # TimeoutExpired pode carregar stdout como bytes mesmo com text=True.
+            partial_stdout = exc.stdout or ""
+            if isinstance(partial_stdout, bytes):
+                partial_stdout = partial_stdout.decode("utf-8", errors="replace")
+            return {"ok": False, "stdout": partial_stdout,
                     "stderr": f"Execução interrompida após {timeout} segundos.",
                     "returncode": None, "timeout": True}
         except Exception as exc:
