@@ -502,6 +502,19 @@ class TestCanaisEParalelismo(unittest.TestCase):
         ok("class C { var valor = 0; func init(v) { this.valor = v; } } "
            "fork t { var objeto = new C(10); }")
 
+    def test_fork_bloqueia_construtor_herdado_que_altera_global(self):
+        m = msgs("var estado = 0; class Base { func init() { estado = 1; } } "
+                 "class Derivada extends Base { } "
+                 "fork t { var objeto = new Derivada(); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_construtor_que_chama_metodo_com_efeito_global(self):
+        m = msgs("var estado = 0; class C { "
+                 "func atualizar() { estado = 1; } "
+                 "func init() { this.atualizar(); } } "
+                 "fork t { var objeto = new C(); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
+
     def test_fork_devolve_valor_para_o_join(self):
         a = ok("fork t { return 5; } var r = join t; print(r + 1);")
         self.assertEqual(a.symbol_table.resolve("r").type, "number")
