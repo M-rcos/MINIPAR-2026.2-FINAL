@@ -3,52 +3,56 @@
 Projeto da disciplina de Compiladores (UFAL / IC). Implementação em Python 3,
 arquitetura por componentes, gerando C++ compilado com GCC.
 
-## Requisitos (Arch Linux)
+## Requisitos
 
-    sudo pacman -S --needed python make gcc
+- Python 3
+- GCC / G++ (para gerar executáveis e rodar os programas)
+- Make (opcional; os comandos também podem ser executados diretamente)
 
-Windows: instale o Python 3 e o MSYS2 (https://www.msys2.org), depois
-`pacman -S mingw-w64-ucrt-x86_64-gcc` e coloque `C:\msys64\ucrt64\bin` no PATH. Use
-`python run_tests.py` no lugar de `make test`. Alternativa: WSL2 com Ubuntu.
+Windows: instale Python 3 e MSYS2; no terminal MSYS2 UCRT64 instale
+\`mingw-w64-ucrt-x86_64-gcc\` e adicione \`C:\\msys64\\ucrt64\\bin\` ao PATH.
+Use \`python run_tests.py\` no lugar de \`make test\`.
 
 ## Estrutura
 
-    src/minipar/common/    erros compartilhados
-    src/minipar/lexer/     Analisador Léxico (ILexer, Lexer, Token)
-    src/minipar/parser/    Analisador Sintático (IParser, Parser), nós da AST, visitor, printer
-    src/minipar/symtable/  Tabela de Símbolos (ISymbolTable, SymbolTable, Scope, Symbol)
-    src/minipar/semantic/  Analisador Semântico (ISemanticAnalyzer, SemanticAnalyzer, biblioteca nativa)
-    src/minipar/tac/       Gerador de Código de Três Endereços (ITACGenerator, TACGenerator, instruções)
-    src/minipar/codegen/   Gerador de C++ (ICodeGenerator, CppGenerator), runtime C++ e integração com o GCC
-    src/minipar/pipeline.py  encadeia todas as fases
-    src/minipar/cli.py     interface de terminal
-    tests/                 testes unitários
-    exemplos/              programas .mp
-    docs/                  gramática BNF, relatório, diagramas UML
+- \`src/minipar/common/\`: erros compartilhados
+- \`src/minipar/lexer/\`: analisador léxico
+- \`src/minipar/parser/\`: parser, AST, visitor e printer
+- \`src/minipar/symtable/\`: tabela de símbolos e escopos
+- \`src/minipar/semantic/\`: analisador semântico
+- \`src/minipar/tac/\`: gerador de código de três endereços
+- \`src/minipar/codegen/\`: gerador C++, runtime e integração GCC
+- \`src/minipar/webapp.py\` e \`web/\`: segunda interface Web didática
+- \`tests/\`: testes automatizados
+- \`exemplos/\`: programas MiniPar e saídas de referência
+- \`docs/\`: gramática, regras, arquitetura e documentação
+- \`evidencias/\`: capturas reais de execução para o relatório
 
-## Uso
+## Uso da CLI
 
-    make test                                                    # roda todos os testes (ou: python run_tests.py)
-    make test-rapido                                             # só os testes que não compilam (menos de 1 s)
-    make tokens F=exemplos/teste02_par_fatorial_fibonacci.mp     # tokenização
-    make ast F=exemplos/teste03_neuronio.mp                      # árvore sintática
-    make check F=exemplos/teste03_neuronio.mp                    # semântica + tabela de símbolos
-    make tac F=exemplos/teste07_quicksort_iterativo.mp           # código de três endereços
-    make cpp F=exemplos/teste03_neuronio.mp                      # código C++
-    make run F=exemplos/teste03_neuronio.mp                      # compila com o GCC e executa
-    make teste1-demo                                             # calculadora cliente/servidor (sockets)
-    python3 mp.py run exemplos/teste03_neuronio.mp          # atalho que dispensa PYTHONPATH (Windows também)
-    python3 -m minipar build programa.mp -O2                     # gera o executável em build/
-    PYTHONPATH=src python3 -m minipar tokens arquivo.mp --json
-    PYTHONPATH=src python3 -m minipar ast arquivo.mp --json
+\`\`\`bash
+make test
+make tokens F=exemplos/teste02_par_fatorial_fibonacci.mp
+make ast F=exemplos/teste03_neuronio.mp
+make check F=exemplos/teste03_neuronio.mp
+make tac F=exemplos/teste07_quicksort_iterativo.mp
+make cpp F=exemplos/teste03_neuronio.mp
+make run F=exemplos/teste03_neuronio.mp
+\`\`\`
+
+## Segunda interface Web
+
+Execute \`make web\` e abra http://127.0.0.1:8765. A interface permite editar MiniPar,
+carregar exemplos e inspecionar tokens, AST, análise semântica, TAC e C++.
+Também permite compilar e executar localmente (requer GCC). O servidor escuta
+somente em loopback por padrão. Consulte \`docs/INTERFACE_WEB.md\`.
 
 ## Estado
 
-- [x] Etapa 1: gramática 2026.2, tratamento de erros, analisador léxico
-- [x] Etapa 2: parser e AST
-- [x] Etapa 3: tabela de símbolos e analisador semântico
-- [x] Etapa 4: código de 3 endereços
-- [x] Etapa 5: gerador C++ e integração com GCC
-- [x] Etapa 6: testes 4, 5, 6 e 11 (redes neurais, quicksort recursivo, minicompilador); ver docs/PROGRAMAS_DE_TESTE.md
-- [x] Etapa 7: canais com sockets (Teste 1); ver docs/CANAIS.md
-- [x] Etapa 8: fork/join em núcleos e em outro computador (Testes 8, 9 e 10); ver docs/FORK_JOIN.md
+- [x] Gramática 2026.2, tratamento de erros e análise léxica
+- [x] Parser, AST, tabela de símbolos e análise semântica
+- [x] TAC, gerador C++ e integração GCC
+- [x] Programas de teste e exemplos
+- [x] Canais e fork/join
+- [x] Interface Web didática adicional (em validação)
+- [ ] Capturas reais da interface e evidências passo a passo
