@@ -323,6 +323,56 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         for name, declaration in declarations.items():
             param_index = {p.name: i for i, p in enumerate(declaration.params)}
             local_aliases: Dict[str, set] = {}
+            # Tipos conhecidos dos receptores permitem associar uma chamada
+            # de método à implementação efetivamente selecionável, em vez de
+            # propagar efeitos de toda classe que reutilize o mesmo nome.
+            local_types: Dict[str, Set[str]] = {}
+            for param in declaration.params:
+                param_type = normalize_declared(param.type_name)
+                if param_type in self.classes:
+                    local_types.setdefault(param.name, set()).add(param_type)
+
+            owner_name = name.rsplit(".", 1)[0] if "." in name else None
+
+            def receiver_classes(expr):
+                if isinstance(expr, This):
+                    return {owner_name} if owner_name in self.classes else set()
+                if isinstance(expr, New):
+                    return {expr.class_name} if expr.class_name in self.classes else set()
+                if isinstance(expr, Identifier):
+                    return set(local_types.get(expr.name, set()))
+                return set()
+
+            def method_targets_for(expr, method_name):
+                receiver_types = receiver_classes(expr)
+                if not receiver_types:
+                    # Sem tipo estático suficiente, mantém a análise
+                    # conservadora para não deixar escapar efeitos possíveis.
+                    return [
+                        key for key in declarations
+                        if key.endswith("." + method_name)
+                    ]
+                targets = set()
+                for receiver_type in receiver_types:
+                    method = self._find_method(receiver_type, method_name)
+                    if method is not None:
+                        target = next(
+                            (key for key, symbol in symbols.items() if symbol is method),
+                            None,
+                        )
+                        if target is not None:
+                            targets.add(target)
+                return sorted(targets)
+
+            def inferred_class(expr):
+                if isinstance(expr, New) and expr.class_name in self.classes:
+                    return expr.class_name
+                if isinstance(expr, This):
+                    return owner_name if owner_name in self.classes else None
+                if isinstance(expr, Identifier):
+                    known = local_types.get(expr.name, set())
+                    return next(iter(known)) if len(known) == 1 else None
+                return None
 
             def origins(expr, state=None):
                 root = self._root_expression(expr)
@@ -390,9 +440,7 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                         process_expr(arg, state)
                     if expr.name in LIST_METHODS and expr.name != "size":
                         record_mutation(expr.obj, state)
-                    method_targets = [
-                        key for key in declarations if key.endswith("." + expr.name)
-                    ]
+                    method_targets = method_targets_for(expr.obj, expr.name)
                     for target in method_targets:
                         add_call((
                             target,
@@ -451,6 +499,9 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                             state[stmt.name] = found
                         else:
                             state.pop(stmt.name, None)
+                        inferred = inferred_class(stmt.init)
+                        if inferred is not None:
+                            local_types[stmt.name] = {inferred}
                     return state
                 if isinstance(stmt, Assign):
                     process_expr(stmt.target, state)
@@ -467,6 +518,9 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                                 state[root.name] = found
                             else:
                                 state.pop(root.name, None)
+                            inferred = inferred_class(stmt.value)
+                            if inferred is not None:
+                                local_types.setdefault(root.name, set()).add(inferred)
                     elif isinstance(root, This) and isinstance(stmt.target, (Member, Index)):
                         effects[name]["receiver"] = True
                     return state

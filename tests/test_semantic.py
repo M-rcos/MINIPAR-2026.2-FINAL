@@ -487,6 +487,13 @@ class TestCanaisEParalelismo(unittest.TestCase):
         self.assertTrue(any("'break'" in m for m in msgs(
             "while (true) { fork t { break; } }")))
 
+    def test_fork_nao_confunde_metodos_homonimos_de_classes_distintas(self):
+        ok("var estado = 0; "
+           "class Segura { func executar() { print(1); } } "
+           "class Perigosa { func executar() { estado = 1; } } "
+           "func chamar() { var objeto = new Segura(); objeto.executar(); } "
+           "fork t { chamar(); }")
+
     def test_fork_bloqueia_construtor_que_altera_global(self):
         m = msgs("var estado = 0; class C { func init() { estado = 1; } } "
                  "fork t { var objeto = new C(); }")
