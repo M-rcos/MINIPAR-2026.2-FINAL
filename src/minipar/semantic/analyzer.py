@@ -814,10 +814,41 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                               node.args, node)
         return node.class_name
 
+    def _check_global_task_method_mutation(self, obj: Expr, obj_type: str,
+                                           method: str, node: Node) -> None:
+        """Impede efeitos colaterais indiretos em objetos globais dentro de tarefas.
+
+        Variáveis locais capturadas são cópias independentes e continuam mutáveis.
+        Canais globais não passam por esta regra: são o mecanismo explícito de
+        comunicação entre tarefas.
+        """
+        if not self.in_task:
+            return
+        root = self._root_identifier(obj)
+        if root is None:
+            return
+        found = self.table.resolve_with_scope(root.name)
+        if found is None:
+            return
+        sym, scope = found
+        if scope is not self.table.global_scope or sym.kind != VARIABLE:
+            return
+        mutating_list_methods = {"append", "push_back", "pop"}
+        mutates_global = (obj_type in self.classes or
+                          (obj_type == LIST and method in mutating_list_methods))
+        if mutates_global:
+            self._error(
+                f"A tarefa (fork/par) não pode modificar a variável global '{root.name}' "
+                f"por chamada do método '{method}'. Use uma cópia local ou um canal "
+                f"(send/receive) para comunicar resultados",
+                node,
+            )
+
     def visit_MethodCall(self, node: MethodCall):
         ot = self._value(node.obj)
         arg_types = [self._value(a) for a in node.args]
         name = node.name
+        self._check_global_task_method_mutation(node.obj, ot, name, node)
 
         if ot == UNKNOWN:
             return UNKNOWN
