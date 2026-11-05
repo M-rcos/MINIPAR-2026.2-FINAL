@@ -401,14 +401,14 @@ class TestCanaisEParalelismo(unittest.TestCase):
 
     def test_tarefa_nao_pode_mutar_lista_global_por_metodo(self):
         m = msgs("var lista = [1]; fork t { lista.append(2); }")
-        self.assertTrue(any("global" in x and "não pode ser modificada" in x for x in m))
+        self.assertTrue(any("global" in x and "não pode modificar" in x for x in m))
 
     def test_tarefa_nao_pode_chamar_metodo_em_objeto_global(self):
         source = ("class Caixa { var valor = 0; "
                   "func incrementar() { this.valor += 1; } } "
                   "var caixa = new Caixa(); fork t { caixa.incrementar(); }")
         m = msgs(source)
-        self.assertTrue(any("global" in x and "não pode ser modificada" in x for x in m))
+        self.assertTrue(any("global" in x and "não pode modificar" in x for x in m))
 
     def test_tarefa_pode_mutar_copia_local(self):
         ok("func f() { var lista = [1]; fork t { lista.append(2); } join t; }")
