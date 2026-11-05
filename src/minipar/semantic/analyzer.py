@@ -327,6 +327,9 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             # de método à implementação efetivamente selecionável, em vez de
             # propagar efeitos de toda classe que reutilize o mesmo nome.
             local_types: Dict[str, Set[str]] = {}
+            # Se qualquer caminho atribuir um valor sem tipo de classe
+            # conhecido, o receptor passa a ser analisado conservadoramente.
+            unknown_receiver_types: Set[str] = set()
             for param in declaration.params:
                 param_type = normalize_declared(param.type_name)
                 if param_type in self.classes:
@@ -340,6 +343,8 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                 if isinstance(expr, New):
                     return {expr.class_name} if expr.class_name in self.classes else set()
                 if isinstance(expr, Identifier):
+                    if expr.name in unknown_receiver_types:
+                        return set()
                     return set(local_types.get(expr.name, set()))
                 return set()
 
@@ -512,6 +517,10 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                         inferred = inferred_class(stmt.init)
                         if inferred is not None:
                             local_types[stmt.name] = {inferred}
+                            unknown_receiver_types.discard(stmt.name)
+                        else:
+                            local_types.pop(stmt.name, None)
+                            unknown_receiver_types.add(stmt.name)
                     return state
                 if isinstance(stmt, Assign):
                     process_expr(stmt.target, state)
@@ -531,6 +540,9 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                             inferred = inferred_class(stmt.value)
                             if inferred is not None:
                                 local_types.setdefault(root.name, set()).add(inferred)
+                            else:
+                                local_types.pop(root.name, None)
+                                unknown_receiver_types.add(root.name)
                     elif isinstance(root, This) and isinstance(stmt.target, (Member, Index)):
                         effects[name]["receiver"] = True
                     return state

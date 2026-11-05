@@ -494,6 +494,16 @@ class TestCanaisEParalelismo(unittest.TestCase):
            "func chamar() { var objeto = new Segura(); objeto.executar(); } "
            "fork t { chamar(); }")
 
+    def test_fork_detecta_metodo_apos_reatribuicao_de_receptor_desconhecido(self):
+        m = msgs("var estado = 0; "
+                 "class Segura { func executar() { print(1); } } "
+                 "class Perigosa { func executar() { estado = 1; } } "
+                 "func criar() { return new Perigosa(); } "
+                 "func chamar() { var objeto = new Segura(); "
+                 "objeto = criar(); objeto.executar(); } "
+                 "fork t { chamar(); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
+
     def test_fork_conserva_efeitos_de_metodo_com_receptor_sem_tipo_estatico(self):
         m = msgs("var estado = 0; "
                  "class Base { func executar() { print(1); } } "
