@@ -370,15 +370,15 @@ class TestCanaisEParalelismo(unittest.TestCase):
             "var l = [1]; par { l[0] = 2; }")))
 
     def test_subtarefa_nao_muta_lista_global_diretamente(self):
-        self.assertTrue(any("não compartilha memória" in m for m in msgs(
+        self.assertTrue(any("variável global" in m for m in msgs(
             "var lista = [1]; fork t { lista.append(2); }")))
-        self.assertTrue(any("não compartilha memória" in m for m in msgs(
+        self.assertTrue(any("variável global" in m for m in msgs(
             "var lista = [1]; par { lista.pop(); }")))
 
     def test_fork_nao_chama_funcao_que_altera_global_indiretamente(self):
         m = msgs("var lista = [1]; func adicionar() { lista.append(2); } "
                  "fork t { adicionar(); }")
-        self.assertTrue(any("altera variável(is) global(is)" in x for x in m))
+        self.assertTrue(any("pode alterar variável(is) global(is)" in x for x in m))
 
     def test_efeito_global_transitivo_entre_funcoes(self):
         m = msgs("var total = 0; func nivel2() { total = 3; } "

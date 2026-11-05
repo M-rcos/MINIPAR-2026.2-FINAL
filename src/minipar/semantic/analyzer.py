@@ -448,9 +448,9 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         writes = set(effect["globals"])
         for index in effect["params"]:
             if index < len(args):
-                writes.update(self._task_origins(args[index]))
+                writes.update(self._task_origins(args[index]) & self._global_names)
         if effect["receiver"] and receiver is not None:
-            writes.update(self._task_origins(receiver))
+            writes.update(self._task_origins(receiver) & self._global_names)
         if writes:
             names = ", ".join(sorted(writes))
             self._error(
@@ -1045,8 +1045,22 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
 
         if ot == UNKNOWN:
             return UNKNOWN
-        if ot == LIST and name in {"append", "push_back", "pop"}:
-            self._check_isolation(node.obj)
+        if ot == LIST and name in {"append", "push_back", "pop"} and self.in_task:
+            # Globais estáticas não são capturadas por cópia no worker C++;
+            # variáveis locais externas são copiadas para a subtarefa e podem
+            # ser modificadas sem compartilhar estado com o chamador.
+            root = self._root_identifier(node.obj)
+            origins = self._task_origins(node.obj)
+            unsafe = ({root.name} if root is not None and
+                      root.name in self._global_names else set()) | (
+                          origins & self._global_names
+                      )
+            if unsafe:
+                self._error(
+                    "A subtarefa não pode alterar variável global (" +
+                    ", ".join(sorted(unsafe)) + "). Use canais para comunicar resultados",
+                    node,
+                )
 
         if ot in self.classes:
             m = self._find_method(ot, name)
