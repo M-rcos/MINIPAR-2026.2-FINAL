@@ -353,8 +353,18 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                         if key.endswith("." + method_name)
                     ]
                 targets = set()
-                for receiver_type in receiver_types:
-                    method = self._find_method(receiver_type, method_name)
+                # Um receptor declarado como classe-base pode conter uma
+                # instância de qualquer subclasse. Incluímos as implementações
+                # sobrescritas dessas subclasses para manter a análise segura
+                # diante de despacho dinâmico.
+                possible_types = {
+                    candidate
+                    for receiver_type in receiver_types
+                    for candidate in self.classes
+                    if self._is_subclass(candidate, receiver_type)
+                }
+                for possible_type in possible_types:
+                    method = self._find_method(possible_type, method_name)
                     if method is not None:
                         target = next(
                             (key for key, symbol in symbols.items() if symbol is method),
