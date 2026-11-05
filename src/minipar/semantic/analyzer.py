@@ -324,25 +324,39 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             param_index = {p.name: i for i, p in enumerate(declaration.params)}
             local_aliases: Dict[str, set] = {}
 
-            def origins(expr):
+            def origins(expr, state=None):
                 root = self._root_expression(expr)
+                current = local_aliases if state is None else state
                 if isinstance(root, Identifier):
                     if root.name in self._global_names:
                         return {("global", root.name)}
                     if root.name in param_index:
                         return {("param", param_index[root.name])}
-                    return set(local_aliases.get(root.name, set()))
+                    return set(current.get(root.name, set()))
                 if isinstance(root, This):
                     return {("receiver", None)}
                 return set()
 
-            # Analisa aliases na ordem do código. Cada atribuição substitui
-            # a origem anterior, e os efeitos/calls guardam a origem existente
-            # exatamente no ponto em que ocorrem.
-            ast_nodes = list(self._walk_ast(declaration.body))
+            # A análise é estruturada por comando para não linearizar ramos
+            # condicionais. Nos pontos de junção, unimos as origens possíveis:
+            # basta um caminho manter alias para que a mutação seja relevante.
+            def copy_aliases(state):
+                return {key: set(value) for key, value in state.items()}
 
-            def record_mutation(expr):
-                for kind, value in origins(expr):
+            def merge_aliases(*states):
+                merged = {}
+                for state in states:
+                    for key, value in state.items():
+                        if value:
+                            merged.setdefault(key, set()).update(value)
+                return merged
+
+            def add_call(edge):
+                if edge not in calls[name]:
+                    calls[name].append(edge)
+
+            def record_mutation(expr, state):
+                for kind, value in origins(expr, state):
                     if kind == "global":
                         effects[name]["globals"].add(value)
                     elif kind == "param":
@@ -350,39 +364,155 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                     elif kind == "receiver":
                         effects[name]["receiver"] = True
 
-            for item in ast_nodes:
-                if isinstance(item, VarDecl) and item.init is not None:
-                    local_aliases[item.name] = origins(item.init)
-                elif isinstance(item, Assign):
-                    root = self._root_expression(item.target)
+            def process_expr(expr, state):
+                if expr is None:
+                    return
+                if isinstance(expr, MethodCall):
+                    process_expr(expr.obj, state)
+                    for arg in expr.args:
+                        process_expr(arg, state)
+                    if expr.name in LIST_METHODS and expr.name != "size":
+                        record_mutation(expr.obj, state)
+                    method_targets = [
+                        key for key in declarations if key.endswith("." + expr.name)
+                    ]
+                    for target in method_targets:
+                        add_call((
+                            target,
+                            [origins(arg, state) for arg in expr.args],
+                            origins(expr.obj, state),
+                        ))
+                    return
+                if isinstance(expr, Call):
+                    for arg in expr.args:
+                        process_expr(arg, state)
+                    if expr.name in declarations:
+                        add_call((
+                            expr.name,
+                            [origins(arg, state) for arg in expr.args],
+                            set(),
+                        ))
+                    return
+                if is_dataclass(expr):
+                    for field_info in fields(expr):
+                        value = getattr(expr, field_info.name)
+                        if isinstance(value, Expr):
+                            process_expr(value, state)
+                        elif isinstance(value, list):
+                            for child in value:
+                                if isinstance(child, Expr):
+                                    process_expr(child, state)
+
+            def process_sequence(statements, state):
+                current = state
+                for statement in statements:
+                    current = process_stmt(statement, current)
+                return current
+
+            def process_loop(initial, step):
+                # Zero ou mais iterações: combina o estado de entrada com o
+                # estado após cada iteração até estabilizar as proveniências.
+                current = copy_aliases(initial)
+                for _ in range(len(ast_nodes) + 2):
+                    after = step(copy_aliases(current))
+                    merged = merge_aliases(initial, after)
+                    if merged == current:
+                        break
+                    current = merged
+                return current
+
+            def process_stmt(stmt, state):
+                if stmt is None:
+                    return state
+                if isinstance(stmt, Block):
+                    return process_sequence(stmt.statements, state)
+                if isinstance(stmt, VarDecl):
+                    process_expr(stmt.init, state)
+                    if stmt.init is not None:
+                        found = origins(stmt.init, state)
+                        if found:
+                            state[stmt.name] = found
+                        else:
+                            state.pop(stmt.name, None)
+                    return state
+                if isinstance(stmt, Assign):
+                    process_expr(stmt.target, state)
+                    process_expr(stmt.value, state)
+                    root = self._root_expression(stmt.target)
                     if isinstance(root, Identifier):
                         if root.name in self._global_names:
                             effects[name]["globals"].add(root.name)
-                        elif isinstance(item.target, (Member, Index)):
-                            record_mutation(item.target)
+                        elif isinstance(stmt.target, (Member, Index)):
+                            record_mutation(stmt.target, state)
                         else:
-                            local_aliases[root.name] = origins(item.value)
-                    elif isinstance(root, This) and isinstance(item.target, (Member, Index)):
+                            found = origins(stmt.value, state)
+                            if found:
+                                state[root.name] = found
+                            else:
+                                state.pop(root.name, None)
+                    elif isinstance(root, This) and isinstance(stmt.target, (Member, Index)):
                         effects[name]["receiver"] = True
-                elif isinstance(item, MethodCall):
-                    if item.name in LIST_METHODS and item.name != "size":
-                        record_mutation(item.obj)
-                    method_targets = [
-                        key for key in declarations if key.endswith("." + item.name)
-                    ]
-                    for target in method_targets:
-                        calls[name].append((
-                            target,
-                            [origins(arg) for arg in item.args],
-                            origins(item.obj),
-                        ))
-                elif isinstance(item, Call) and item.name in declarations:
-                    calls[name].append((
-                        item.name,
-                        [origins(arg) for arg in item.args],
-                        set(),
-                    ))
-            aliases[name] = local_aliases
+                    return state
+                if isinstance(stmt, If):
+                    process_expr(stmt.cond, state)
+                    then_state = process_stmt(stmt.then_branch, copy_aliases(state))
+                    else_state = (process_stmt(stmt.else_branch, copy_aliases(state))
+                                  if stmt.else_branch is not None
+                                  else copy_aliases(state))
+                    return merge_aliases(then_state, else_state)
+                if isinstance(stmt, While):
+                    def while_step(loop_state):
+                        process_expr(stmt.cond, loop_state)
+                        return process_stmt(stmt.body, loop_state)
+                    return process_loop(state, while_step)
+                if isinstance(stmt, DoWhile):
+                    def do_step(loop_state):
+                        after_body = process_stmt(stmt.body, loop_state)
+                        process_expr(stmt.cond, after_body)
+                        return after_body
+                    return process_loop(state, do_step)
+                if isinstance(stmt, For):
+                    current = process_stmt(stmt.init, state) if stmt.init is not None else state
+                    def for_step(loop_state):
+                        process_expr(stmt.cond, loop_state)
+                        after_body = process_stmt(stmt.body, loop_state)
+                        return (process_stmt(stmt.update, after_body)
+                                if stmt.update is not None else after_body)
+                    return process_loop(current, for_step)
+                if isinstance(stmt, ForIn):
+                    process_expr(stmt.iterable, state)
+                    return process_loop(
+                        state, lambda loop_state: process_stmt(stmt.body, loop_state)
+                    )
+                if isinstance(stmt, (Fork, ParBlock)):
+                    # As subtarefas têm cópias independentes do estado local.
+                    # Seus efeitos/calls são analisados, mas não reatribuem
+                    # aliases no fluxo da função que as criou.
+                    if isinstance(stmt, Fork):
+                        process_stmt(stmt.body, copy_aliases(state))
+                    else:
+                        for child in stmt.statements:
+                            process_stmt(child, copy_aliases(state))
+                    return state
+                if isinstance(stmt, Expr):
+                    process_expr(stmt, state)
+                    return state
+                if is_dataclass(stmt):
+                    for field_info in fields(stmt):
+                        value = getattr(stmt, field_info.name)
+                        if isinstance(value, Expr):
+                            process_expr(value, state)
+                        elif isinstance(value, Node):
+                            state = process_stmt(value, state)
+                        elif isinstance(value, list):
+                            for child in value:
+                                if isinstance(child, Expr):
+                                    process_expr(child, state)
+                                elif isinstance(child, Node):
+                                    state = process_stmt(child, state)
+                return state
+
+            process_stmt(declaration.body, local_aliases)
 
         changed = True
         while changed:
