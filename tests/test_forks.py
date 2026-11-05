@@ -268,14 +268,28 @@ class BenchmarkBase(Compilado):
         if nucleos > 4:
             self.assertIn(f"Núcleos Utilizados (Paralelo) : {nucleos}", out)
         self.assertIn("Atividades corrigidas: 160 (sequencial) e 160 (paralelo)", out)
-        # aceleração e redução são coerentes com os tempos (que saem arredondados)
+        # Tempos e speedup são impressos com duas casas decimais.
+        # Comparamos intervalos compatíveis com esse arredondamento, em vez de
+        # usar uma tolerância fixa que pode falhar em execuções muito rápidas.
         aceleracao = num("Aceleração") if nucleos == 4 else num("Aceleração (Speedup)")
         reducao = num("Redução no tempo") if nucleos == 4 else num("Redução de Tempo")
         self.assertGreater(aceleracao, 0)
-        self.assertAlmostEqual(aceleracao, seq / par, delta=max(0.15, 0.1 * seq / par))
-        # Valida a redução contra o speedup impresso, não contra tempos arredondados.
-        # O arredondamento dos tempos pode distorcer a porcentagem em execuções rápidas.
-        self.assertAlmostEqual(reducao, (1 - 1 / aceleracao) * 100, delta=1.0)
+
+        seq_min, seq_max = max(0, seq - 0.005), seq + 0.005
+        par_min, par_max = max(0, par - 0.005), par + 0.005
+        speedup_min = seq_min / par_max
+        speedup_max = seq_max / par_min if par_min > 0 else float("inf")
+        self.assertGreaterEqual(aceleracao + 0.005, speedup_min)
+        self.assertLessEqual(aceleracao - 0.005, speedup_max)
+
+        # A redução deriva do speedup sem arredondamento, mas é exibida com
+        # uma casa. Propagamos o intervalo de arredondamento do speedup.
+        speedup_low = max(0.000001, aceleracao - 0.005)
+        speedup_high = aceleracao + 0.005
+        reducao_min = (1 - 1 / speedup_low) * 100
+        reducao_max = (1 - 1 / speedup_high) * 100
+        self.assertGreaterEqual(reducao + 0.05, reducao_min - 1e-9)
+        self.assertLessEqual(reducao - 0.05, reducao_max + 1e-9)
 
 
 class TestTeste08(BenchmarkBase):
