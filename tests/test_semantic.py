@@ -436,6 +436,10 @@ class TestCanaisEParalelismo(unittest.TestCase):
                  "par { seq { var copia; copia = lista; adicionar(copia); } }")
         self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
 
+    def test_subtarefa_pode_reatribuir_alias_para_lista_local(self):
+        ok("var lista = [1]; fork t { var copia = lista; "
+           "copia = [2]; copia.append(3); }")
+
     def test_subtarefa_pode_ler_variavel_externa_e_ter_variaveis_proprias(self):
         ok("var x = 1; fork t { var y = x + 1; y = y + 1; print(y); }")
 

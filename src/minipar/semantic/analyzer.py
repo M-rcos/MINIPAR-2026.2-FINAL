@@ -697,16 +697,31 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         return {root.name} if self.table.crosses_isolation(scope) else set()
 
     def _record_task_alias(self, name: str, expr: Expr) -> None:
-        if self.in_task:
-            origins = self._task_origins(expr)
-            if origins:
-                self._task_aliases.setdefault(name, set()).update(origins)
+        if not self.in_task:
+            return
+        # Atribuir outro valor a uma variável local substitui o alias anterior.
+        # Sem isso, uma referência antiga a global continuaria contaminando
+        # mutações posteriores mesmo depois de a variável receber uma cópia nova.
+        origins = self._task_origins(expr)
+        if origins:
+            self._task_aliases[name] = set(origins)
+        else:
+            self._task_aliases.pop(name, None)
 
     def _check_isolation(self, target: Expr) -> None:
         root = self._root_identifier(target)
         if root is None:
             return
-        origins = self._task_origins(target)
+        if isinstance(target, Identifier):
+            # Reatribuir uma variável local apenas troca sua referência; não
+            # altera o objeto externo que ela eventualmente referenciava.
+            found = self.table.resolve_with_scope(root.name)
+            if found is None:
+                return
+            _, scope = found
+            origins = {root.name} if self.table.crosses_isolation(scope) else set()
+        else:
+            origins = self._task_origins(target)
         if origins:
             original = ", ".join(sorted(origins))
             self._error(f"A subtarefa (fork/par) não compartilha memória: '{original}' foi "
