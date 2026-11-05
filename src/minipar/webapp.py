@@ -14,6 +14,8 @@ from .pipeline import to_cpp
 ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR, EXAMPLES_DIR = ROOT / "web", ROOT / "exemplos"
 MAX_SOURCE_BYTES = 128 * 1024
+COMPILE_TIMEOUT_SECONDS = 20
+RUN_TIMEOUT_SECONDS = 10
 
 def analyze_source(source: str) -> dict:
     """Executa as fases em ordem e devolve dados serializáveis para a UI."""
@@ -53,14 +55,20 @@ def analyze_source(source: str) -> dict:
     result["ok"] = True
     return result
 
-def run_source(source: str, timeout: int = 10) -> dict:
+def run_source(source: str, timeout: int = RUN_TIMEOUT_SECONDS) -> dict:
     """Compila e executa em pasta temporária, limitando o tempo de execução."""
     with tempfile.TemporaryDirectory(prefix="minipar-web-") as temp:
         work = Path(temp)
         path = work / "programa.mp"
         path.write_text(source, encoding="utf-8")
         try:
-            build = build_executable(str(path), out_dir=str(work / "build"))
+            build = build_executable(str(path), out_dir=str(work / "build"),
+                                     timeout=COMPILE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "stdout": "",
+                    "stderr": f"Compilação interrompida após {COMPILE_TIMEOUT_SECONDS} segundos.",
+                    "returncode": None, "timeout": True, "stage": "compile"}
+        try:
             proc = subprocess.run([str(build.exe_path.resolve())], cwd=work,
                                   capture_output=True, text=True, timeout=timeout, check=False)
             return {"ok": proc.returncode == 0, "stdout": proc.stdout,
@@ -72,7 +80,7 @@ def run_source(source: str, timeout: int = 10) -> dict:
                 partial_stdout = partial_stdout.decode("utf-8", errors="replace")
             return {"ok": False, "stdout": partial_stdout,
                     "stderr": f"Execução interrompida após {timeout} segundos.",
-                    "returncode": None, "timeout": True}
+                    "returncode": None, "timeout": True, "stage": "run"}
         except Exception as exc:
             return {"ok": False, "stdout": "", "stderr": str(exc), "returncode": None}
 
