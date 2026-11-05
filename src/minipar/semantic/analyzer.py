@@ -340,6 +340,7 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             # A análise é estruturada por comando para não linearizar ramos
             # condicionais. Nos pontos de junção, unimos as origens possíveis:
             # basta um caminho manter alias para que a mutação seja relevante.
+            ast_nodes = list(self._walk_ast(declaration.body))
             def copy_aliases(state):
                 return {key: set(value) for key, value in state.items()}
 
