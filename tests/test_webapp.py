@@ -1,12 +1,14 @@
 """Testes da camada de serviço usada pela interface Web didática."""
 import json
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from minipar.webapp import analyze_source, run_source
+from minipar.webapp import analyze_source, run_source, _run_bounded_process
 
 
 class WebAppServiceTests(unittest.TestCase):
@@ -35,12 +37,14 @@ class WebAppServiceTests(unittest.TestCase):
         self.assertEqual(result["cpp"], "")
 
     def test_execution_timeout_preserves_partial_byte_output_as_json_text(self):
-        timeout_error = subprocess.TimeoutExpired(
-            cmd=["programa"], timeout=10, output=b"saida parcial"
-        )
         fake_build = SimpleNamespace(exe_path=Path("programa"))
+        timeout_result = {
+            "ok": False, "stdout": "saida parcial",
+            "stderr": "Execução interrompida após 10 segundos.",
+            "returncode": None, "timeout": True, "stage": "run",
+        }
         with patch("minipar.webapp.build_executable", return_value=fake_build), \
-             patch("minipar.webapp.subprocess.run", side_effect=timeout_error):
+             patch("minipar.webapp._run_bounded_process", return_value=timeout_result):
             result = run_source('print("teste");')
 
         self.assertFalse(result["ok"])
@@ -51,6 +55,26 @@ class WebAppServiceTests(unittest.TestCase):
         json.dumps(result, ensure_ascii=False)
 
 
+
+    def test_execution_output_is_capped_across_both_streams(self):
+        import minipar.webapp as webapp
+
+        with tempfile.TemporaryDirectory() as temp, \
+             patch.object(webapp, "MAX_OUTPUT_BYTES", 128):
+            result = _run_bounded_process(
+                [sys.executable, "-c",
+                 "import sys; sys.stdout.write('x'*10000); "
+                 "sys.stderr.write('y'*10000)"],
+                Path(temp), timeout=5,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["output_limit"])
+        self.assertLessEqual(
+            len(result["stdout"].encode()) + len(result["stderr"].encode()),
+            128 + len("Saída interrompida: limite de 0 KiB atingido.".encode()),
+        )
+        self.assertIn("limite", result["stderr"])
 
     def test_compilation_timeout_returns_distinct_stage(self):
         timeout_error = subprocess.TimeoutExpired(cmd=["g++"], timeout=20)
