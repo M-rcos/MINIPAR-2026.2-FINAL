@@ -51,5 +51,35 @@ class WebAppServiceTests(unittest.TestCase):
         json.dumps(result, ensure_ascii=False)
 
 
+
+    def test_local_request_rejects_non_loopback_host(self):
+        from minipar.webapp import MiniParHandler
+
+        handler = MiniParHandler.__new__(MiniParHandler)
+        handler.headers = {"Host": "example.com:8765"}
+        self.assertFalse(handler._is_local_request())
+
+    def test_local_request_rejects_cross_origin(self):
+        from minipar.webapp import MiniParHandler
+
+        handler = MiniParHandler.__new__(MiniParHandler)
+        handler.headers = {
+            "Host": "127.0.0.1:8765",
+            "Origin": "http://evil.example",
+            "Sec-Fetch-Site": "cross-site",
+        }
+        self.assertFalse(handler._is_local_request())
+
+    def test_local_request_accepts_same_origin_loopback(self):
+        from minipar.webapp import MiniParHandler
+
+        handler = MiniParHandler.__new__(MiniParHandler)
+        handler.headers = {
+            "Host": "127.0.0.1:8765",
+            "Origin": "http://127.0.0.1:8765",
+            "Sec-Fetch-Site": "same-origin",
+        }
+        self.assertTrue(handler._is_local_request())
+
 if __name__ == "__main__":
     unittest.main()
