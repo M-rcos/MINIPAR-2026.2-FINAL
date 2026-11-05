@@ -22,7 +22,8 @@ erros em cascata). O tipo de retorno das funções é inferido dos "return".
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from dataclasses import fields, is_dataclass
+from typing import Dict, List, Optional, Set, Tuple
 
 from ..common import MiniParError, SemanticError
 from ..parser.ast_nodes import (
@@ -45,6 +46,7 @@ from .builtins import CHANNEL_METHODS, FUNCTIONS, LIST_METHODS, STRING_METHODS
 from .interface import ISemanticAnalyzer
 
 _PRIMITIVES = {NUMBER, STRING, BOOL}
+_MUTATING_METHODS = {"append", "pop", "insert", "remove", "clear", "sort", "reverse"}
 
 
 def _or_join(names) -> str:
@@ -70,6 +72,9 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         self.resolved: Dict[Node, Symbol] = {}      # símbolo ao qual cada nó se refere
         self._decl_symbol: Dict[Node, Symbol] = {}  # declaração -> símbolo (função/método)
         self._class_of_node: Dict[Node, ClassInfo] = {}
+        self._global_names: Set[str] = set()
+        self._function_effects: Dict[str, Set[str]] = {}
+        self._method_effects: Dict[int, Set[str]] = {}
 
         self.loop_depth = 0
         self.func_ctx: Optional[_FuncCtx] = None
@@ -92,6 +97,7 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
 
     def analyze(self, program: Program) -> List[MiniParError]:
         self._declare_globals(program)
+        self._analyze_function_effects(program)
         for node in program.body:
             self.visit(node)
         return self._errors
@@ -264,6 +270,101 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         for name in info.attributes:
             if self._find_attr(info.superclass, name) is not None:
                 self._error(f"O atributo '{name}' já existe na superclasse de '{info.name}'", node)
+
+    def _walk_ast(self, node: Node):
+        """Percorre os nós da AST sem depender da ordem dos campos de cada nó."""
+        if not is_dataclass(node):
+            return
+        yield node
+        for item in fields(node):
+            value = getattr(node, item.name)
+            if isinstance(value, Node):
+                yield from self._walk_ast(value)
+            elif isinstance(value, list):
+                for child in value:
+                    if isinstance(child, Node):
+                        yield from self._walk_ast(child)
+
+    def _analyze_function_effects(self, program: Program) -> None:
+        """Calcula efeitos globais diretos e transitivos de funções e métodos.
+
+        A análise é conservadora: qualquer atribuição cujo identificador raiz
+        seja global é considerada escrita, mesmo se houver sombreamento local.
+        Isso pode rejeitar algum código seguro, mas evita aceitar uma corrida.
+        """
+        self._global_names = {
+            node.name for node in program.body if isinstance(node, VarDecl)
+        }
+        declarations: Dict[str, FuncDecl] = {}
+        symbols: Dict[str, Symbol] = {}
+        for node in program.body:
+            if isinstance(node, FuncDecl):
+                sym = self._decl_symbol.get(node)
+                if sym is not None:
+                    declarations[node.name] = node
+                    symbols[node.name] = sym
+            elif isinstance(node, ClassDecl):
+                for member in node.members:
+                    if isinstance(member, FuncDecl):
+                        sym = self._decl_symbol.get(member)
+                        if sym is not None:
+                            key = f"{node.name}.{member.name}"
+                            declarations[key] = member
+                            symbols[key] = sym
+
+        direct: Dict[str, Set[str]] = {name: set() for name in declarations}
+        calls: Dict[str, Set[str]] = {name: set() for name in declarations}
+        for name, declaration in declarations.items():
+            for item in self._walk_ast(declaration.body):
+                if isinstance(item, Assign):
+                    root = self._root_identifier(item.target)
+                    if root is not None and root.name in self._global_names:
+                        direct[name].add(root.name)
+                elif isinstance(item, MethodCall):
+                    root = self._root_identifier(item.obj)
+                    if root is not None and root.name in self._global_names:
+                        if item.name in _MUTATING_METHODS:
+                            direct[name].add(root.name)
+                    calls[name].update(
+                        key for key in declarations
+                        if key.endswith("." + item.name)
+                    )
+                elif isinstance(item, Call) and item.name in declarations:
+                    calls[name].add(item.name)
+
+        effects = {name: set(values) for name, values in direct.items()}
+        changed = True
+        while changed:
+            changed = False
+            for name in declarations:
+                combined = set(effects[name])
+                for callee in calls[name]:
+                    combined.update(effects.get(callee, ()))
+                if combined != effects[name]:
+                    effects[name] = combined
+                    changed = True
+
+        self._function_effects = {
+            name: values for name, values in effects.items()
+            if "." not in name
+        }
+        self._method_effects = {
+            id(symbols[name]): effects[name]
+            for name in declarations if "." in name
+        }
+
+    def _check_task_function_effects(self, name: str, node: Node) -> None:
+        if not self.in_task:
+            return
+        writes = self._function_effects.get(name, set())
+        if writes:
+            names = ", ".join(sorted(writes))
+            self._error(
+                f"A função '{name}' altera variável(is) global(is) ({names}) e não pode "
+                f"ser chamada dentro de uma subtarefa (fork/par). Use canais para "
+                f"comunicar resultados",
+                node,
+            )
 
     # ==================================================================
     # 2ª passagem: estrutura
@@ -781,6 +882,7 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         if sym is not None:
             if sym.kind == FUNCTION:
                 self.resolved[node] = sym
+                self._check_task_function_effects(node.name, node)
                 self._check_user_args(f"A função '{node.name}'", sym.params or [],
                                       arg_types, node.args, node)
                 return sym.return_type
@@ -829,6 +931,16 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                 else:
                     self._error(f"Método '{name}' não declarado em '{ot}'", node)
                 return UNKNOWN
+            if self.in_task:
+                writes = self._method_effects.get(id(m), set())
+                if writes:
+                    names = ", ".join(sorted(writes))
+                    self._error(
+                        f"O método '{name}' altera variável(is) global(is) ({names}) e não "
+                        f"pode ser chamado dentro de uma subtarefa (fork/par). Use canais "
+                        f"para comunicar resultados",
+                        node,
+                    )
             self._check_user_args(f"O método '{name}'", m.params or [], arg_types,
                                   node.args, node)
             return m.return_type

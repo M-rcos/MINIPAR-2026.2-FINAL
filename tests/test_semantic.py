@@ -369,6 +369,25 @@ class TestCanaisEParalelismo(unittest.TestCase):
         self.assertTrue(any("não compartilha memória" in m for m in msgs(
             "var l = [1]; par { l[0] = 2; }")))
 
+    def test_fork_nao_chama_funcao_que_altera_global_indiretamente(self):
+        m = msgs("var lista = [1]; func adicionar() { lista.append(2); } "
+                 "fork t { adicionar(); }")
+        self.assertTrue(any("altera variável(is) global(is)" in x for x in m))
+
+    def test_efeito_global_transitivo_entre_funcoes(self):
+        m = msgs("var total = 0; func nivel2() { total = 3; } "
+                 "func nivel1() { nivel2(); } fork t { nivel1(); }")
+        self.assertTrue(any("total" in x and "subtarefa" in x for x in m))
+
+    def test_funcao_pura_pode_ser_chamada_em_fork_e_par(self):
+        ok("var total = 0; func dobro(x) { return x * 2; } "
+           "fork t { var r = dobro(total); } par { var q = dobro(total); }")
+
+    def test_metodo_de_classe_com_efeito_global_e_bloqueado(self):
+        m = msgs("var estado = 0; class C { func alterar() { estado = 1; } } "
+                 "var c = new C(); fork t { c.alterar(); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
+
     def test_subtarefa_pode_ler_variavel_externa_e_ter_variaveis_proprias(self):
         ok("var x = 1; fork t { var y = x + 1; y = y + 1; print(y); }")
 
