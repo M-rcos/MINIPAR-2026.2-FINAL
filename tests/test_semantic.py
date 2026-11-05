@@ -404,6 +404,22 @@ class TestCanaisEParalelismo(unittest.TestCase):
                  "var objeto = new C(); fork t { objeto.alterar(); }")
         self.assertTrue(any("objeto" in x and "subtarefa" in x for x in m))
 
+    def test_fork_bloqueia_alias_local_de_global_em_funcao(self):
+        m = msgs("var lista = [1]; func adicionar() { var copia = lista; "
+                 "copia.append(2); } fork t { adicionar(); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_alias_local_transitivo(self):
+        m = msgs("var lista = [1]; func adicionar() { var copia = lista; "
+                 "copia.append(2); } func encaminhar() { adicionar(); } "
+                 "fork t { encaminhar(); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_alias_local_de_parametro(self):
+        m = msgs("var lista = [1]; func adicionar(xs) { var copia = xs; "
+                 "copia.append(2); } fork t { adicionar(lista); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
     def test_subtarefa_pode_ler_variavel_externa_e_ter_variaveis_proprias(self):
         ok("var x = 1; fork t { var y = x + 1; y = y + 1; print(y); }")
 
