@@ -63,6 +63,15 @@ class WebAppServiceTests(unittest.TestCase):
         self.assertIn("20 segundos", result["stderr"])
         json.dumps(result, ensure_ascii=False)
 
+    def test_compilation_error_returns_json_friendly_result(self):
+        with patch("minipar.webapp.build_executable", side_effect=RuntimeError("erro do compilador")):
+            result = run_source('print("teste");')
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stage"], "compile")
+        self.assertIn("erro do compilador", result["stderr"])
+        json.dumps(result, ensure_ascii=False)
+
     def test_local_request_rejects_non_loopback_host(self):
         from minipar.webapp import MiniParHandler
 
