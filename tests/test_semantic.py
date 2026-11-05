@@ -426,6 +426,16 @@ class TestCanaisEParalelismo(unittest.TestCase):
                  "copia.append(2); } fork t { adicionar(lista); }")
         self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
 
+    def test_fork_bloqueia_alias_local_da_global_passado_a_funcao(self):
+        m = msgs("var lista = [1]; func adicionar(xs) { xs.append(2); } "
+                 "fork t { var copia = lista; adicionar(copia); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_par_bloqueia_alias_local_atribuido_depois(self):
+        m = msgs("var lista = [1]; func adicionar(xs) { xs.pop(); } "
+                 "par { var copia; copia = lista; adicionar(copia); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
     def test_subtarefa_pode_ler_variavel_externa_e_ter_variaveis_proprias(self):
         ok("var x = 1; fork t { var y = x + 1; y = y + 1; print(y); }")
 
