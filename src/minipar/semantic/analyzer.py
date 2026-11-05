@@ -336,23 +336,25 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                     return {("receiver", None)}
                 return set()
 
-            # Resolve aliases locais até estabilizar (inclui cadeias: a=b; b=param).
+            # Resolve aliases locais com transferência sequencial: uma
+            # reatribuição substitui a origem anterior, em vez de acumulá-la.
+            # Repetimos para resolver cadeias que dependem de uma atribuição
+            # posterior (a=b; b=param), preservando o efeito de "kill".
             ast_nodes = list(self._walk_ast(declaration.body))
-            changed_alias = True
-            while changed_alias:
-                changed_alias = False
+            previous_aliases: Dict[str, set] = {}
+            while True:
+                local_aliases = {
+                    alias: set(found) for alias, found in previous_aliases.items()
+                }
                 for item in ast_nodes:
                     if isinstance(item, VarDecl) and item.init is not None:
-                        found = origins(item.init)
-                        before = len(local_aliases.get(item.name, set()))
-                        local_aliases.setdefault(item.name, set()).update(found)
-                        changed_alias |= len(local_aliases[item.name]) != before
+                        local_aliases[item.name] = origins(item.init)
                     elif (isinstance(item, Assign)
                           and isinstance(item.target, Identifier)):
-                        found = origins(item.value)
-                        before = len(local_aliases.get(item.target.name, set()))
-                        local_aliases.setdefault(item.target.name, set()).update(found)
-                        changed_alias |= len(local_aliases[item.target.name]) != before
+                        local_aliases[item.target.name] = origins(item.value)
+                if local_aliases == previous_aliases:
+                    break
+                previous_aliases = local_aliases
             aliases[name] = local_aliases
 
             def record_mutation(expr):
