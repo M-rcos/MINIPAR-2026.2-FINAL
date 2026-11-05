@@ -69,7 +69,7 @@ class WebAppServiceTests(unittest.TestCase):
         self.assertTrue(result["timeout"])
         self.assertEqual(result["stage"], "run")
         self.assertIn("saida parcial", result["stdout"])
-        self.assertIn("\\ufffd", result["stdout"])
+        self.assertIn("\ufffd", result["stdout"])
         self.assertIn("erro parcial", result["stderr"])
         self.assertIn("0.2 segundos", result["stderr"])
         # Bytes arbitrários precisam virar texto UTF-8 serializável no endpoint.
