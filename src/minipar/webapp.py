@@ -118,8 +118,13 @@ class MiniParHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path not in ("/api/analyze", "/api/run"):
             return self._json({"error": "Rota não encontrada."}, 404)
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0 or length > MAX_SOURCE_BYTES:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return self._json({"error": "Cabeçalho Content-Length inválido."}, 400)
+        if length <= 0:
+            return self._json({"error": "O corpo da requisição está vazio."}, 400)
+        if length > MAX_SOURCE_BYTES:
             return self._json({"error": "Envie código com até 128 KiB."}, 413)
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
