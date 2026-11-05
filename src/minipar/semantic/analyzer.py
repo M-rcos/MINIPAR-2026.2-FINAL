@@ -46,7 +46,6 @@ from .builtins import CHANNEL_METHODS, FUNCTIONS, LIST_METHODS, STRING_METHODS
 from .interface import ISemanticAnalyzer
 
 _PRIMITIVES = {NUMBER, STRING, BOOL}
-_MUTATING_METHODS = {"append", "pop", "insert", "remove", "clear", "sort", "reverse"}
 
 
 def _or_join(names) -> str:
@@ -388,11 +387,6 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                     before = len(current["globals"])
                     current["globals"].update(callee_effect["globals"])
                     changed |= len(current["globals"]) != before
-                    before = len(current["params"])
-                    current["params"].update(callee_effect["params"]) if (
-                        receiver is None and caller == callee
-                    ) else None
-                    changed |= len(current["params"]) != before
 
         self._function_effects = {
             name: effect for name, effect in effects.items() if "." not in name
