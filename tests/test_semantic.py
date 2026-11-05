@@ -494,11 +494,11 @@ class TestCanaisEParalelismo(unittest.TestCase):
            "func chamar() { var objeto = new Segura(); objeto.executar(); } "
            "fork t { chamar(); }")
 
-    def test_fork_detecta_efeito_de_metodo_sobrescrito_em_subclasse(self):
+    def test_fork_conserva_efeitos_de_metodo_com_receptor_sem_tipo_estatico(self):
         m = msgs("var estado = 0; "
                  "class Base { func executar() { print(1); } } "
                  "class Derivada extends Base { func executar() { estado = 1; } } "
-                 "func chamar(Base objeto) { objeto.executar(); } "
+                 "func chamar(objeto) { objeto.executar(); } "
                  "fork t { var objeto = new Derivada(); chamar(objeto); }")
         self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
 
