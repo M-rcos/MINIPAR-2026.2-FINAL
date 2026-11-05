@@ -1,0 +1,48 @@
+# Gerador de Código C++ e integração com o GCC
+
+Pipeline completo: `.mp` -> Lexer -> Parser (AST) -> Semântico -> TAC -> **C++** -> **GCC** -> executável.
+
+## Comandos
+
+```
+make cpp   F=exemplos/teste03_neuronio.mp     # só gera o C++ (mostra na tela)
+python3 -m minipar build programa.mp -O2       # gera e compila (pasta build/)
+python3 -m minipar run   programa.mp           # compila e executa
+```
+
+Opções: `-O0 -O1 -O2 -O3 -Os` (otimização do GCC, padrão `-O2`), `--dir pasta` (saída, padrão `build/`), `-o nome` (caminho do executável, só no `build`).
+
+Arquivos gerados em `build/`: `programa.cpp`, `minipar_runtime.hpp` e o executável (`programa`, ou `programa.exe` no Windows). O GCC é chamado como `g++ -std=c++17 -O2 -pthread`.
+
+## Como o TAC vira C++
+
+| TAC | C++ gerado |
+|---|---|
+| `func f(a, b):` | `mp::Value fn_f(mp::Value v_a, mp::Value v_b)` (variáveis e temporários declarados no topo) |
+| `x = a + b` | `v_x = mp::add(v_a, v_b);` |
+| `if a < b goto L` | `if (mp::lt(a, b)) goto L_L;` |
+| `param a` ... `r = call f, 2` | `v_r = fn_f(a, b);` (chamada nativa: `mp::bi_len(...)`) |
+| `r = callm o.m, 1` | `mp::call_method(o, "m", {a})` (despacho dinâmico) |
+| `x = new C` | `mp::new_obj("C")`; classes registradas em `register_classes()` |
+| `o.campo = v`, `x = o.campo` | `mp::set_member`, `mp::get_member` |
+| `par_begin` ... `task nome -> f(...)` ... `par_end` | `mp::TaskGroup`: uma thread por tarefa, com cópias dos argumentos; `join` no fim |
+| `fork t on core N -> f(...)`, `join`, `x = join t` | `mp::ForkTable`: thread nomeada fixada no núcleo N (`pthread_setaffinity_np` ou `SetThreadAffinityMask`); `join` devolve o resultado da tarefa |
+| `fork t on host H, P -> f(...)` | chamada ao trabalhador de outro computador (`--worker`), com os argumentos serializados |
+
+## Runtime (`minipar_runtime.hpp`)
+
+Cabeçalho único em C++17. Principais pontos:
+
+* **`mp::Value`**: valor dinâmico (nulo, bool, número, string, lista, objeto, canal). Listas e objetos têm semântica de referência, como no Python. Números são `double`; um número inteiro é impresso sem casa decimal (`7`), os demais com a menor representação exata (`0.30000000000000004`).
+* **Erros de execução** (divisão por zero, índice fora dos limites, método inexistente, conversão inválida) terminam o programa com a mensagem `Erro de execução: ...` e código de saída 1. Erros dentro de uma subtarefa também terminam com código 1.
+* **Operadores**: `%` tem o sinal do divisor (`-7 % 3 = 2`, como no Python); índices negativos contam a partir do fim.
+* **Subtarefas**: cada `par`/`fork` captura as variáveis locais **por cópia** (`[=]`), como processos independentes. Variáveis globais e o conteúdo de listas e objetos compartilham memória (o analisador semântico já bloqueia a atribuição direta a variáveis externas).
+* **Saída**: o `print` monta a linha inteira e a escreve sob um `mutex`, para que linhas de threads diferentes não se misturem.
+
+## Canais
+
+Implementados com sockets TCP (ver `docs/CANAIS.md`). O programa compilado aceita `--node` e `--hosts`.
+
+## Subtarefas e outros computadores
+
+Ver `docs/FORK_JOIN.md`.

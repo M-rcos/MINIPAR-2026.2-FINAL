@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+build/
+*.exe
+*.out
+*.zip
+/sierpinski.svg
+/Codigo-Assembly-ARMV7.arm
