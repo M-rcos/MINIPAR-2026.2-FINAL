@@ -445,6 +445,23 @@ class TestCanaisEParalelismo(unittest.TestCase):
                  "func encaminhar() { alterar(lista); } fork t { encaminhar(); }")
         self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
 
+    def test_fork_bloqueia_alias_global_em_ramo_condicional(self):
+        m = msgs("var lista = [1]; func alterar(cond) { var copia = lista; "
+                 "if (cond) { copia = [2]; } copia.append(3); } "
+                 "fork t { alterar(true); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_alias_global_em_laco(self):
+        m = msgs("var lista = [1]; func alterar(cond) { var copia = lista; "
+                 "while (cond) { copia = [2]; } copia.append(3); } "
+                 "fork t { alterar(true); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_permite_alias_reatribuido_em_todos_os_ramos(self):
+        ok("var lista = [1]; func alterar(cond) { var copia = lista; "
+           "if (cond) { copia = [2]; } else { copia = [3]; } "
+           "copia.append(4); } fork t { alterar(true); }")
+
     def test_fork_bloqueia_alias_local_da_global_passado_a_funcao(self):
         m = msgs("var lista = [1]; func adicionar(xs) { xs.append(2); } "
                  "fork t { var copia = lista; adicionar(copia); }")
