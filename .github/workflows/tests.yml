@@ -1,0 +1,33 @@
+name: Testes automatizados
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-and-integration:
+    name: Suíte Python e integração C++
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Baixar o repositório
+        uses: actions/checkout@v5
+
+      - name: Configurar Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Verificar compilador C++
+        run: |
+          python --version
+          g++ --version
+
+      - name: Executar todos os testes
+        run: python run_tests.py
