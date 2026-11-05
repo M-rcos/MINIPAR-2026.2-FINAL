@@ -368,6 +368,22 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             def process_expr(expr, state):
                 if expr is None:
                     return
+                if isinstance(expr, New):
+                    for arg in expr.args:
+                        process_expr(arg, state)
+                    init = self._find_method(expr.class_name, "init")
+                    if init is not None:
+                        target = next(
+                            (key for key, symbol in symbols.items() if symbol is init),
+                            None,
+                        )
+                        if target is not None:
+                            add_call((
+                                target,
+                                [origins(arg, state) for arg in expr.args],
+                                set(),
+                            ))
+                    return
                 if isinstance(expr, MethodCall):
                     process_expr(expr.obj, state)
                     for arg in expr.args:
@@ -1164,6 +1180,14 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             return UNKNOWN
         init = self._find_method(node.class_name, "init")
         params = init.params if init and init.params else []
+        if init is not None:
+            self._check_task_call_effects(
+                f"construtor de '{node.class_name}'",
+                self._method_effects.get(id(init), {
+                    "globals": set(), "params": set(), "receiver": False
+                }),
+                node.args, node,
+            )
         self._check_user_args(f"O construtor de '{node.class_name}'", params, arg_types,
                               node.args, node)
         return node.class_name

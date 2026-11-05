@@ -487,6 +487,21 @@ class TestCanaisEParalelismo(unittest.TestCase):
         self.assertTrue(any("'break'" in m for m in msgs(
             "while (true) { fork t { break; } }")))
 
+    def test_fork_bloqueia_construtor_que_altera_global(self):
+        m = msgs("var estado = 0; class C { func init() { estado = 1; } } "
+                 "fork t { var objeto = new C(); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_construtor_que_muta_parametro_global_transitivamente(self):
+        m = msgs("var lista = [1]; class C { func init(xs) { xs.append(2); } } "
+                 "func criar() { var objeto = new C(lista); } "
+                 "fork t { criar(); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_permite_construtor_que_muta_apenas_o_novo_receptor(self):
+        ok("class C { var valor = 0; func init(v) { this.valor = v; } } "
+           "fork t { var objeto = new C(10); }")
+
     def test_fork_devolve_valor_para_o_join(self):
         a = ok("fork t { return 5; } var r = join t; print(r + 1);")
         self.assertEqual(a.symbol_table.resolve("r").type, "number")
