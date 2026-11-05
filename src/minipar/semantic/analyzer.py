@@ -285,13 +285,14 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                     if isinstance(child, Node):
                         yield from self._walk_ast(child)
 
-    def _analyze_function_effects(self, program: Program) -> None:
-        """Calcula efeitos globais diretos e transitivos de funções e métodos.
+    def _root_expression(self, node: Expr):
+        """Retorna a raiz de uma expressão de acesso (identificador ou this)."""
+        while isinstance(node, (Member, Index)):
+            node = node.obj
+        return node
 
-        A análise é conservadora: qualquer atribuição cujo identificador raiz
-        seja global é considerada escrita, mesmo se houver sombreamento local.
-        Isso pode rejeitar algum código seguro, mas evita aceitar uma corrida.
-        """
+    def _analyze_function_effects(self, program: Program) -> None:
+        """Calcula efeitos globais e mutações de parâmetros, inclusive transitivas."""
         self._global_names = {
             node.name for node in program.body if isinstance(node, VarDecl)
         }
@@ -312,57 +313,117 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                             declarations[key] = member
                             symbols[key] = sym
 
-        direct: Dict[str, Set[str]] = {name: set() for name in declarations}
-        calls: Dict[str, Set[str]] = {name: set() for name in declarations}
+        effects = {
+            name: {"globals": set(), "params": set(), "receiver": False}
+            for name in declarations
+        }
+        calls = {name: [] for name in declarations}
+
         for name, declaration in declarations.items():
+            param_index = {p.name: i for i, p in enumerate(declaration.params)}
             for item in self._walk_ast(declaration.body):
                 if isinstance(item, Assign):
-                    root = self._root_identifier(item.target)
-                    if root is not None and root.name in self._global_names:
-                        direct[name].add(root.name)
+                    root = self._root_expression(item.target)
+                    is_object_write = isinstance(item.target, (Member, Index))
+                    if isinstance(root, Identifier):
+                        if root.name in self._global_names:
+                            effects[name]["globals"].add(root.name)
+                        elif is_object_write and root.name in param_index:
+                            effects[name]["params"].add(param_index[root.name])
+                    elif isinstance(root, This) and is_object_write:
+                        effects[name]["receiver"] = True
                 elif isinstance(item, MethodCall):
-                    root = self._root_identifier(item.obj)
-                    if root is not None and root.name in self._global_names:
-                        if item.name in _MUTATING_METHODS:
-                            direct[name].add(root.name)
-                    calls[name].update(
-                        key for key in declarations
-                        if key.endswith("." + item.name)
-                    )
+                    root = self._root_expression(item.obj)
+                    if item.name in {"append", "push_back", "pop"}:
+                        if isinstance(root, Identifier):
+                            if root.name in self._global_names:
+                                effects[name]["globals"].add(root.name)
+                            elif root.name in param_index:
+                                effects[name]["params"].add(param_index[root.name])
+                        elif isinstance(root, This):
+                            effects[name]["receiver"] = True
+                    # Liga chamadas de métodos de usuário. Sem resolução de tipo
+                    # nesta etapa, consideramos todas as implementações homônimas.
+                    method_targets = [
+                        key for key in declarations if key.endswith("." + item.name)
+                    ]
+                    for target in method_targets:
+                        calls[name].append((target, item.args, item.obj))
                 elif isinstance(item, Call) and item.name in declarations:
-                    calls[name].add(item.name)
+                    calls[name].append((item.name, item.args, None))
 
-        effects = {name: set(values) for name, values in direct.items()}
         changed = True
         while changed:
             changed = False
-            for name in declarations:
-                combined = set(effects[name])
-                for callee in calls[name]:
-                    combined.update(effects.get(callee, ()))
-                if combined != effects[name]:
-                    effects[name] = combined
-                    changed = True
+            for caller, edges in calls.items():
+                caller_params = {
+                    p.name: i for i, p in enumerate(declarations[caller].params)
+                }
+                current = effects[caller]
+                for callee, args, receiver in edges:
+                    callee_effect = effects[callee]
+
+                    def propagate(expr):
+                        root = self._root_expression(expr)
+                        if isinstance(root, Identifier):
+                            if root.name in self._global_names:
+                                if root.name not in current["globals"]:
+                                    current["globals"].add(root.name)
+                                    return True
+                            elif root.name in caller_params:
+                                index = caller_params[root.name]
+                                if index not in current["params"]:
+                                    current["params"].add(index)
+                                    return True
+                        elif isinstance(root, This) and not current["receiver"]:
+                            current["receiver"] = True
+                            return True
+                        return False
+
+                    for index in callee_effect["params"]:
+                        if index < len(args):
+                            changed |= propagate(args[index])
+                    if callee_effect["receiver"] and receiver is not None:
+                        changed |= propagate(receiver)
+                    before = len(current["globals"])
+                    current["globals"].update(callee_effect["globals"])
+                    changed |= len(current["globals"]) != before
+                    before = len(current["params"])
+                    current["params"].update(callee_effect["params"]) if (
+                        receiver is None and caller == callee
+                    ) else None
+                    changed |= len(current["params"]) != before
 
         self._function_effects = {
-            name: values for name, values in effects.items()
-            if "." not in name
+            name: effect for name, effect in effects.items() if "." not in name
         }
         self._method_effects = {
             id(symbols[name]): effects[name]
             for name in declarations if "." in name
         }
 
-    def _check_task_function_effects(self, name: str, node: Node) -> None:
+    def _check_task_call_effects(
+        self, name: str, effect: dict, args: List[Expr], node: Node,
+        receiver: Optional[Expr] = None,
+    ) -> None:
         if not self.in_task:
             return
-        writes = self._function_effects.get(name, set())
+        writes = set(effect["globals"])
+        for index in effect["params"]:
+            if index < len(args):
+                root = self._root_identifier(args[index])
+                if root is not None and root.name in self._global_names:
+                    writes.add(root.name)
+        if effect["receiver"] and receiver is not None:
+            root = self._root_identifier(receiver)
+            if root is not None and root.name in self._global_names:
+                writes.add(root.name)
         if writes:
             names = ", ".join(sorted(writes))
             self._error(
-                f"A função '{name}' altera variável(is) global(is) ({names}) e não pode "
-                f"ser chamada dentro de uma subtarefa (fork/par). Use canais para "
-                f"comunicar resultados",
+                f"A chamada de '{name}' pode alterar variável(is) global(is) "
+                f"({names}) e não pode ocorrer dentro de uma subtarefa "
+                f"(fork/par). Use canais para comunicar resultados",
                 node,
             )
 
@@ -882,7 +943,11 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         if sym is not None:
             if sym.kind == FUNCTION:
                 self.resolved[node] = sym
-                self._check_task_function_effects(node.name, node)
+                self._check_task_call_effects(
+                    node.name, self._function_effects.get(node.name, {
+                        "globals": set(), "params": set(), "receiver": False
+                    }), node.args, node
+                )
                 self._check_user_args(f"A função '{node.name}'", sym.params or [],
                                       arg_types, node.args, node)
                 return sym.return_type
@@ -931,16 +996,11 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                 else:
                     self._error(f"Método '{name}' não declarado em '{ot}'", node)
                 return UNKNOWN
-            if self.in_task:
-                writes = self._method_effects.get(id(m), set())
-                if writes:
-                    names = ", ".join(sorted(writes))
-                    self._error(
-                        f"O método '{name}' altera variável(is) global(is) ({names}) e não "
-                        f"pode ser chamado dentro de uma subtarefa (fork/par). Use canais "
-                        f"para comunicar resultados",
-                        node,
-                    )
+            self._check_task_call_effects(
+                name, self._method_effects.get(id(m), {
+                    "globals": set(), "params": set(), "receiver": False
+                }), node.args, node, receiver=node.obj
+            )
             self._check_user_args(f"O método '{name}'", m.params or [], arg_types,
                                   node.args, node)
             return m.return_type
