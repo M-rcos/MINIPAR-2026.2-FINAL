@@ -22,7 +22,8 @@ erros em cascata). O tipo de retorno das funções é inferido dos "return".
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from dataclasses import fields, is_dataclass
+from typing import Dict, List, Optional, Set, Tuple
 
 from ..common import MiniParError, SemanticError
 from ..parser.ast_nodes import (
@@ -70,6 +71,10 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         self.resolved: Dict[Node, Symbol] = {}      # símbolo ao qual cada nó se refere
         self._decl_symbol: Dict[Node, Symbol] = {}  # declaração -> símbolo (função/método)
         self._class_of_node: Dict[Node, ClassInfo] = {}
+        self._global_names: Set[str] = set()
+        self._function_effects: Dict[str, Set[str]] = {}
+        self._method_effects: Dict[int, Set[str]] = {}
+        self._task_aliases: Dict[str, Set[str]] = {}
 
         self.loop_depth = 0
         self.func_ctx: Optional[_FuncCtx] = None
@@ -92,6 +97,7 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
 
     def analyze(self, program: Program) -> List[MiniParError]:
         self._declare_globals(program)
+        self._analyze_function_effects(program)
         for node in program.body:
             self.visit(node)
         return self._errors
@@ -265,6 +271,402 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             if self._find_attr(info.superclass, name) is not None:
                 self._error(f"O atributo '{name}' já existe na superclasse de '{info.name}'", node)
 
+    def _walk_ast(self, node: Node):
+        """Percorre os nós da AST sem depender da ordem dos campos de cada nó."""
+        if not is_dataclass(node):
+            return
+        yield node
+        for item in fields(node):
+            value = getattr(node, item.name)
+            if isinstance(value, Node):
+                yield from self._walk_ast(value)
+            elif isinstance(value, list):
+                for child in value:
+                    if isinstance(child, Node):
+                        yield from self._walk_ast(child)
+
+    def _root_expression(self, node: Expr):
+        """Retorna a raiz de uma expressão de acesso (identificador ou this)."""
+        while isinstance(node, (Member, Index)):
+            node = node.obj
+        return node
+
+    def _analyze_function_effects(self, program: Program) -> None:
+        """Calcula efeitos globais, parâmetros mutáveis e aliases locais."""
+        self._global_names = {
+            node.name for node in program.body if isinstance(node, VarDecl)
+        }
+        declarations: Dict[str, FuncDecl] = {}
+        symbols: Dict[str, Symbol] = {}
+        for node in program.body:
+            if isinstance(node, FuncDecl):
+                sym = self._decl_symbol.get(node)
+                if sym is not None:
+                    declarations[node.name] = node
+                    symbols[node.name] = sym
+            elif isinstance(node, ClassDecl):
+                for member in node.members:
+                    if isinstance(member, FuncDecl):
+                        sym = self._decl_symbol.get(member)
+                        if sym is not None:
+                            key = f"{node.name}.{member.name}"
+                            declarations[key] = member
+                            symbols[key] = sym
+
+        effects = {
+            name: {"globals": set(), "params": set(), "receiver": False}
+            for name in declarations
+        }
+        calls = {name: [] for name in declarations}
+        aliases: Dict[str, Dict[str, set]] = {}
+
+        for name, declaration in declarations.items():
+            param_index = {p.name: i for i, p in enumerate(declaration.params)}
+            local_aliases: Dict[str, set] = {}
+            # Tipos conhecidos dos receptores permitem associar uma chamada
+            # de método à implementação efetivamente selecionável, em vez de
+            # propagar efeitos de toda classe que reutilize o mesmo nome.
+            local_types: Dict[str, Set[str]] = {}
+            # Se qualquer caminho atribuir um valor sem tipo de classe
+            # conhecido, o receptor passa a ser analisado conservadoramente.
+            unknown_receiver_types: Set[str] = set()
+            for param in declaration.params:
+                param_type = normalize_declared(param.type_name)
+                if param_type in self.classes:
+                    local_types.setdefault(param.name, set()).add(param_type)
+
+            owner_name = name.rsplit(".", 1)[0] if "." in name else None
+
+            def receiver_classes(expr):
+                if isinstance(expr, This):
+                    return {owner_name} if owner_name in self.classes else set()
+                if isinstance(expr, New):
+                    return {expr.class_name} if expr.class_name in self.classes else set()
+                if isinstance(expr, Identifier):
+                    if expr.name in unknown_receiver_types:
+                        return set()
+                    return set(local_types.get(expr.name, set()))
+                return set()
+
+            def method_targets_for(expr, method_name):
+                receiver_types = receiver_classes(expr)
+                if not receiver_types:
+                    # Sem tipo estático suficiente, mantém a análise
+                    # conservadora para não deixar escapar efeitos possíveis.
+                    return [
+                        key for key in declarations
+                        if key.endswith("." + method_name)
+                    ]
+                targets = set()
+                # Um receptor declarado como classe-base pode conter uma
+                # instância de qualquer subclasse. Incluímos as implementações
+                # sobrescritas dessas subclasses para manter a análise segura
+                # diante de despacho dinâmico.
+                possible_types = {
+                    candidate
+                    for receiver_type in receiver_types
+                    for candidate in self.classes
+                    if self._is_subclass(candidate, receiver_type)
+                }
+                for possible_type in possible_types:
+                    method = self._find_method(possible_type, method_name)
+                    if method is not None:
+                        target = next(
+                            (key for key, symbol in symbols.items() if symbol is method),
+                            None,
+                        )
+                        if target is not None:
+                            targets.add(target)
+                return sorted(targets)
+
+            def inferred_class(expr):
+                if isinstance(expr, New) and expr.class_name in self.classes:
+                    return expr.class_name
+                if isinstance(expr, This):
+                    return owner_name if owner_name in self.classes else None
+                if isinstance(expr, Identifier):
+                    known = local_types.get(expr.name, set())
+                    return next(iter(known)) if len(known) == 1 else None
+                return None
+
+            def origins(expr, state=None):
+                root = self._root_expression(expr)
+                current = local_aliases if state is None else state
+                if isinstance(root, Identifier):
+                    if root.name in self._global_names:
+                        return {("global", root.name)}
+                    if root.name in param_index:
+                        return {("param", param_index[root.name])}
+                    return set(current.get(root.name, set()))
+                if isinstance(root, This):
+                    return {("receiver", None)}
+                return set()
+
+            # A análise é estruturada por comando para não linearizar ramos
+            # condicionais. Nos pontos de junção, unimos as origens possíveis:
+            # basta um caminho manter alias para que a mutação seja relevante.
+            ast_nodes = list(self._walk_ast(declaration.body))
+            def copy_aliases(state):
+                return {key: set(value) for key, value in state.items()}
+
+            def merge_aliases(*states):
+                merged = {}
+                for state in states:
+                    for key, value in state.items():
+                        if value:
+                            merged.setdefault(key, set()).update(value)
+                return merged
+
+            def add_call(edge):
+                if edge not in calls[name]:
+                    calls[name].append(edge)
+
+            def record_mutation(expr, state):
+                for kind, value in origins(expr, state):
+                    if kind == "global":
+                        effects[name]["globals"].add(value)
+                    elif kind == "param":
+                        effects[name]["params"].add(value)
+                    elif kind == "receiver":
+                        effects[name]["receiver"] = True
+
+            def process_expr(expr, state):
+                if expr is None:
+                    return
+                if isinstance(expr, New):
+                    for arg in expr.args:
+                        process_expr(arg, state)
+                    init = self._find_method(expr.class_name, "init")
+                    if init is not None:
+                        target = next(
+                            (key for key, symbol in symbols.items() if symbol is init),
+                            None,
+                        )
+                        if target is not None:
+                            add_call((
+                                target,
+                                [origins(arg, state) for arg in expr.args],
+                                set(),
+                            ))
+                    return
+                if isinstance(expr, MethodCall):
+                    process_expr(expr.obj, state)
+                    for arg in expr.args:
+                        process_expr(arg, state)
+                    if expr.name in LIST_METHODS and expr.name != "size":
+                        record_mutation(expr.obj, state)
+                    method_targets = method_targets_for(expr.obj, expr.name)
+                    for target in method_targets:
+                        add_call((
+                            target,
+                            [origins(arg, state) for arg in expr.args],
+                            origins(expr.obj, state),
+                        ))
+                    return
+                if isinstance(expr, Call):
+                    for arg in expr.args:
+                        process_expr(arg, state)
+                    if expr.name in declarations:
+                        add_call((
+                            expr.name,
+                            [origins(arg, state) for arg in expr.args],
+                            set(),
+                        ))
+                    return
+                if is_dataclass(expr):
+                    for field_info in fields(expr):
+                        value = getattr(expr, field_info.name)
+                        if isinstance(value, Expr):
+                            process_expr(value, state)
+                        elif isinstance(value, list):
+                            for child in value:
+                                if isinstance(child, Expr):
+                                    process_expr(child, state)
+
+            def process_sequence(statements, state):
+                current = state
+                for statement in statements:
+                    current = process_stmt(statement, current)
+                return current
+
+            def process_loop(initial, step):
+                # Zero ou mais iterações: combina o estado de entrada com o
+                # estado após cada iteração até estabilizar as proveniências.
+                current = copy_aliases(initial)
+                for _ in range(len(ast_nodes) + 2):
+                    after = step(copy_aliases(current))
+                    merged = merge_aliases(initial, after)
+                    if merged == current:
+                        break
+                    current = merged
+                return current
+
+            def process_stmt(stmt, state):
+                if stmt is None:
+                    return state
+                if isinstance(stmt, Block):
+                    return process_sequence(stmt.statements, state)
+                if isinstance(stmt, VarDecl):
+                    process_expr(stmt.init, state)
+                    if stmt.init is not None:
+                        found = origins(stmt.init, state)
+                        if found:
+                            state[stmt.name] = found
+                        else:
+                            state.pop(stmt.name, None)
+                        inferred = inferred_class(stmt.init)
+                        if inferred is not None:
+                            local_types[stmt.name] = {inferred}
+                            unknown_receiver_types.discard(stmt.name)
+                        else:
+                            local_types.pop(stmt.name, None)
+                            unknown_receiver_types.add(stmt.name)
+                    return state
+                if isinstance(stmt, Assign):
+                    process_expr(stmt.target, state)
+                    process_expr(stmt.value, state)
+                    root = self._root_expression(stmt.target)
+                    if isinstance(root, Identifier):
+                        if root.name in self._global_names:
+                            effects[name]["globals"].add(root.name)
+                        elif isinstance(stmt.target, (Member, Index)):
+                            record_mutation(stmt.target, state)
+                        else:
+                            found = origins(stmt.value, state)
+                            if found:
+                                state[root.name] = found
+                            else:
+                                state.pop(root.name, None)
+                            inferred = inferred_class(stmt.value)
+                            if inferred is not None:
+                                local_types.setdefault(root.name, set()).add(inferred)
+                            else:
+                                local_types.pop(root.name, None)
+                                unknown_receiver_types.add(root.name)
+                    elif isinstance(root, This) and isinstance(stmt.target, (Member, Index)):
+                        effects[name]["receiver"] = True
+                    return state
+                if isinstance(stmt, If):
+                    process_expr(stmt.cond, state)
+                    then_state = process_stmt(stmt.then_branch, copy_aliases(state))
+                    else_state = (process_stmt(stmt.else_branch, copy_aliases(state))
+                                  if stmt.else_branch is not None
+                                  else copy_aliases(state))
+                    return merge_aliases(then_state, else_state)
+                if isinstance(stmt, While):
+                    def while_step(loop_state):
+                        process_expr(stmt.cond, loop_state)
+                        return process_stmt(stmt.body, loop_state)
+                    return process_loop(state, while_step)
+                if isinstance(stmt, DoWhile):
+                    def do_step(loop_state):
+                        after_body = process_stmt(stmt.body, loop_state)
+                        process_expr(stmt.cond, after_body)
+                        return after_body
+                    return process_loop(state, do_step)
+                if isinstance(stmt, For):
+                    current = process_stmt(stmt.init, state) if stmt.init is not None else state
+                    def for_step(loop_state):
+                        process_expr(stmt.cond, loop_state)
+                        after_body = process_stmt(stmt.body, loop_state)
+                        return (process_stmt(stmt.update, after_body)
+                                if stmt.update is not None else after_body)
+                    return process_loop(current, for_step)
+                if isinstance(stmt, ForIn):
+                    process_expr(stmt.iterable, state)
+                    return process_loop(
+                        state, lambda loop_state: process_stmt(stmt.body, loop_state)
+                    )
+                if isinstance(stmt, (Fork, ParBlock)):
+                    # As subtarefas têm cópias independentes do estado local.
+                    # Seus efeitos/calls são analisados, mas não reatribuem
+                    # aliases no fluxo da função que as criou.
+                    if isinstance(stmt, Fork):
+                        process_stmt(stmt.body, copy_aliases(state))
+                    else:
+                        for child in stmt.statements:
+                            process_stmt(child, copy_aliases(state))
+                    return state
+                if isinstance(stmt, Expr):
+                    process_expr(stmt, state)
+                    return state
+                if is_dataclass(stmt):
+                    for field_info in fields(stmt):
+                        value = getattr(stmt, field_info.name)
+                        if isinstance(value, Expr):
+                            process_expr(value, state)
+                        elif isinstance(value, Node):
+                            state = process_stmt(value, state)
+                        elif isinstance(value, list):
+                            for child in value:
+                                if isinstance(child, Expr):
+                                    process_expr(child, state)
+                                elif isinstance(child, Node):
+                                    state = process_stmt(child, state)
+                return state
+
+            process_stmt(declaration.body, local_aliases)
+
+        changed = True
+        while changed:
+            changed = False
+            for caller, edges in calls.items():
+                current = effects[caller]
+
+                def propagate_origins(found):
+                    before = (len(current["globals"]), len(current["params"]),
+                              current["receiver"])
+                    for kind, value in found:
+                        if kind == "global":
+                            current["globals"].add(value)
+                        elif kind == "param":
+                            current["params"].add(value)
+                        elif kind == "receiver":
+                            current["receiver"] = True
+                    after = (len(current["globals"]), len(current["params"]),
+                             current["receiver"])
+                    return before != after
+
+                for callee, arg_origins, receiver_origins in edges:
+                    callee_effect = effects[callee]
+                    for index in callee_effect["params"]:
+                        if index < len(arg_origins):
+                            changed |= propagate_origins(arg_origins[index])
+                    if callee_effect["receiver"]:
+                        changed |= propagate_origins(receiver_origins)
+                    before = len(current["globals"])
+                    current["globals"].update(callee_effect["globals"])
+                    changed |= len(current["globals"]) != before
+
+        self._function_effects = {
+            name: effect for name, effect in effects.items() if "." not in name
+        }
+        self._method_effects = {
+            id(symbols[name]): effects[name]
+            for name in declarations if "." in name
+        }
+
+    def _check_task_call_effects(
+        self, name: str, effect: dict, args: List[Expr], node: Node,
+        receiver: Optional[Expr] = None,
+    ) -> None:
+        if not self.in_task:
+            return
+        writes = set(effect["globals"])
+        for index in effect["params"]:
+            if index < len(args):
+                writes.update(self._task_origins(args[index]) & self._global_names)
+        if effect["receiver"] and receiver is not None:
+            writes.update(self._task_origins(receiver) & self._global_names)
+        if writes:
+            names = ", ".join(sorted(writes))
+            self._error(
+                f"A chamada de '{name}' pode alterar variável(is) global(is) "
+                f"({names}) e não pode ocorrer dentro de uma subtarefa "
+                f"(fork/par). Use canais para comunicar resultados",
+                node,
+            )
+
     # ==================================================================
     # 2ª passagem: estrutura
     # ==================================================================
@@ -383,17 +785,21 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
 
     # ------------------------- PAR / FORK / JOIN ----------------------
     def _enter_task(self, result_ctx: Optional[_FuncCtx] = None, remote: bool = False):
-        saved = (self.loop_depth, self.func_ctx, self.in_task, self.task_ctx, self.in_remote_task)
+        saved = (self.loop_depth, self.func_ctx, self.in_task, self.task_ctx,
+                 self.in_remote_task, self._task_aliases)
         self.loop_depth = 0
         self.func_ctx = None
         self.in_task = True
         self.task_ctx = result_ctx
         self.in_remote_task = remote
+        # Subtarefas aninhadas herdam apenas a proveniência dos aliases conhecidos.
+        self._task_aliases = {name: set(origins)
+                              for name, origins in self._task_aliases.items()}
         return saved
 
     def _exit_task(self, saved) -> None:
         (self.loop_depth, self.func_ctx, self.in_task, self.task_ctx,
-         self.in_remote_task) = saved
+         self.in_remote_task, self._task_aliases) = saved
 
     def visit_ParBlock(self, node: ParBlock):
         for i, stmt in enumerate(node.statements):
@@ -459,6 +865,8 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         itype: Optional[str] = None
         if node.init is not None:
             itype = self._value(node.init)
+        if node.init is not None:
+            self._record_task_alias(node.name, node.init)
         if declared == VOID:
             self._error(f"A variável '{node.name}' não pode ter tipo void", node)
             declared = UNKNOWN
@@ -483,16 +891,47 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             node = node.obj
         return node if isinstance(node, Identifier) else None
 
+    def _task_origins(self, expr: Expr) -> Set[str]:
+        root = self._root_identifier(expr)
+        if root is None:
+            return set()
+        if root.name in self._task_aliases:
+            return set(self._task_aliases[root.name])
+        found = self.table.resolve_with_scope(root.name)
+        if found is None:
+            return set()
+        _, scope = found
+        return {root.name} if self.table.crosses_isolation(scope) else set()
+
+    def _record_task_alias(self, name: str, expr: Expr) -> None:
+        if not self.in_task:
+            return
+        # Atribuir outro valor a uma variável local substitui o alias anterior.
+        # Sem isso, uma referência antiga a global continuaria contaminando
+        # mutações posteriores mesmo depois de a variável receber uma cópia nova.
+        origins = self._task_origins(expr)
+        if origins:
+            self._task_aliases[name] = set(origins)
+        else:
+            self._task_aliases.pop(name, None)
+
     def _check_isolation(self, target: Expr) -> None:
         root = self._root_identifier(target)
         if root is None:
             return
-        found = self.table.resolve_with_scope(root.name)
-        if found is None:
-            return
-        sym, scope = found
-        if self.table.crosses_isolation(scope):
-            self._error(f"A subtarefa (fork/par) não compartilha memória: '{root.name}' foi "
+        if isinstance(target, Identifier):
+            # Reatribuir uma variável local apenas troca sua referência; não
+            # altera o objeto externo que ela eventualmente referenciava.
+            found = self.table.resolve_with_scope(root.name)
+            if found is None:
+                return
+            _, scope = found
+            origins = {root.name} if self.table.crosses_isolation(scope) else set()
+        else:
+            origins = self._task_origins(target)
+        if origins:
+            original = ", ".join(sorted(origins))
+            self._error(f"A subtarefa (fork/par) não compartilha memória: '{original}' foi "
                         f"declarada fora dela e não pode ser alterada aqui. Use um canal "
                         f"(send/receive) para comunicar resultados", target)
 
@@ -528,6 +967,8 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             self.visit(target)
 
         self._check_isolation(target)
+        if isinstance(target, Identifier):
+            self._record_task_alias(target.name, node.value)
 
         if node.op == "=":
             if not self._assignable(ttype, vtype):
@@ -781,6 +1222,11 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         if sym is not None:
             if sym.kind == FUNCTION:
                 self.resolved[node] = sym
+                self._check_task_call_effects(
+                    node.name, self._function_effects.get(node.name, {
+                        "globals": set(), "params": set(), "receiver": False
+                    }), node.args, node
+                )
                 self._check_user_args(f"A função '{node.name}'", sym.params or [],
                                       arg_types, node.args, node)
                 return sym.return_type
@@ -810,6 +1256,14 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             return UNKNOWN
         init = self._find_method(node.class_name, "init")
         params = init.params if init and init.params else []
+        if init is not None:
+            self._check_task_call_effects(
+                f"construtor de '{node.class_name}'",
+                self._method_effects.get(id(init), {
+                    "globals": set(), "params": set(), "receiver": False
+                }),
+                node.args, node,
+            )
         self._check_user_args(f"O construtor de '{node.class_name}'", params, arg_types,
                               node.args, node)
         return node.class_name
@@ -821,6 +1275,23 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
 
         if ot == UNKNOWN:
             return UNKNOWN
+        if ot == LIST and name in {"append", "push_back", "pop"} and self.in_task:
+            # Globais estáticas não são capturadas por cópia no worker C++;
+            # variáveis locais externas são copiadas para a subtarefa e podem
+            # ser modificadas sem compartilhar estado com o chamador.
+            root = self._root_identifier(node.obj)
+            origins = self._task_origins(node.obj)
+            unsafe = ({root.name} if root is not None and
+                      root.name in self._global_names else set()) | (
+                          origins & self._global_names
+                      )
+            if unsafe:
+                self._error(
+                    "A subtarefa não pode alterar variável global (" +
+                    ", ".join(sorted(unsafe)) + "). Use canais para comunicar resultados",
+                    node,
+                )
+
         if ot in self.classes:
             m = self._find_method(ot, name)
             if m is None:
@@ -829,6 +1300,11 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
                 else:
                     self._error(f"Método '{name}' não declarado em '{ot}'", node)
                 return UNKNOWN
+            self._check_task_call_effects(
+                name, self._method_effects.get(id(m), {
+                    "globals": set(), "params": set(), "receiver": False
+                }), node.args, node, receiver=node.obj
+            )
             self._check_user_args(f"O método '{name}'", m.params or [], arg_types,
                                   node.args, node)
             return m.return_type

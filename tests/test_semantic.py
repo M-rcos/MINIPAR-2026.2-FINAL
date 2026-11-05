@@ -369,6 +369,113 @@ class TestCanaisEParalelismo(unittest.TestCase):
         self.assertTrue(any("não compartilha memória" in m for m in msgs(
             "var l = [1]; par { l[0] = 2; }")))
 
+    def test_subtarefa_nao_muta_lista_global_diretamente(self):
+        self.assertTrue(any("variável global" in m for m in msgs(
+            "var lista = [1]; fork t { lista.append(2); }")))
+        self.assertTrue(any("variável global" in m for m in msgs(
+            "var lista = [1]; par { lista.pop(); }")))
+
+    def test_fork_nao_chama_funcao_que_altera_global_indiretamente(self):
+        m = msgs("var lista = [1]; func adicionar() { lista.append(2); } "
+                 "fork t { adicionar(); }")
+        self.assertTrue(any("pode alterar variável(is) global(is)" in x for x in m))
+
+    def test_efeito_global_transitivo_entre_funcoes(self):
+        m = msgs("var total = 0; func nivel2() { total = 3; } "
+                 "func nivel1() { nivel2(); } fork t { nivel1(); }")
+        self.assertTrue(any("total" in x and "subtarefa" in x for x in m))
+
+    def test_funcao_pura_pode_ser_chamada_em_fork_e_par(self):
+        ok("var total = 0; func dobro(x) { return x * 2; } "
+           "fork t { var r = dobro(total); } par { var q = dobro(total); }")
+
+    def test_metodo_de_classe_com_efeito_global_e_bloqueado(self):
+        m = msgs("var estado = 0; class C { func alterar() { estado = 1; } } "
+                 "var c = new C(); fork t { c.alterar(); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_mutacao_de_global_por_parametro(self):
+        m = msgs("var lista = [1]; func adicionar(xs) { xs.append(2); } "
+                 "fork t { adicionar(lista); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_mutacao_de_global_por_parametro_transitivo(self):
+        m = msgs("var lista = [1]; func adicionar(xs) { xs.append(2); } "
+                 "func encaminhar(ys) { adicionar(ys); } "
+                 "fork t { encaminhar(lista); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_mutacao_do_receptor_global_por_this(self):
+        m = msgs("class C { var x = 0; func alterar() { this.x = 1; } } "
+                 "var objeto = new C(); fork t { objeto.alterar(); }")
+        self.assertTrue(any("objeto" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_alias_local_de_global_em_funcao(self):
+        m = msgs("var lista = [1]; func adicionar() { var copia = lista; "
+                 "copia.append(2); } fork t { adicionar(); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_alias_local_transitivo(self):
+        m = msgs("var lista = [1]; func adicionar() { var copia = lista; "
+                 "copia.append(2); } func encaminhar() { adicionar(); } "
+                 "fork t { encaminhar(); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_alias_local_de_parametro(self):
+        m = msgs("var lista = [1]; func adicionar(xs) { var copia = xs; "
+                 "copia.append(2); } fork t { adicionar(lista); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_permite_mutar_alias_reatribuido_em_funcao(self):
+        ok("var lista = [1]; func adicionar(xs) { var copia = xs; "
+           "copia = [2]; copia.append(3); } fork t { adicionar(lista); }")
+
+    def test_fork_permite_mutar_alias_global_reatribuido_em_funcao(self):
+        ok("var lista = [1]; func adicionar() { var copia = lista; "
+           "copia = [2]; copia.append(3); } fork t { adicionar(); }")
+
+    def test_fork_bloqueia_mutacao_de_alias_antes_da_reatribuicao(self):
+        m = msgs("var lista = [1]; func adicionar() { var copia = lista; "
+                 "copia.append(2); copia = [3]; } fork t { adicionar(); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_mutacao_de_alias_antes_da_reatribuicao_transitiva(self):
+        m = msgs("var lista = [1]; func alterar(xs) { var copia = xs; "
+                 "copia.append(2); copia = [3]; } "
+                 "func encaminhar() { alterar(lista); } fork t { encaminhar(); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_alias_global_em_ramo_condicional(self):
+        m = msgs("var lista = [1]; func alterar(cond) { var copia = lista; "
+                 "if (cond) { copia = [2]; } copia.append(3); } "
+                 "fork t { alterar(true); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_alias_global_em_laco(self):
+        m = msgs("var lista = [1]; func alterar(cond) { var copia = lista; "
+                 "while (cond) { copia = [2]; } copia.append(3); } "
+                 "fork t { alterar(true); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_permite_alias_reatribuido_em_todos_os_ramos(self):
+        ok("var lista = [1]; func alterar(cond) { var copia = lista; "
+           "if (cond) { copia = [2]; } else { copia = [3]; } "
+           "copia.append(4); } fork t { alterar(true); }")
+
+    def test_fork_bloqueia_alias_local_da_global_passado_a_funcao(self):
+        m = msgs("var lista = [1]; func adicionar(xs) { xs.append(2); } "
+                 "fork t { var copia = lista; adicionar(copia); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_par_bloqueia_alias_local_atribuido_depois(self):
+        m = msgs("var lista = [1]; func adicionar(xs) { xs.pop(); } "
+                 "par { seq { var copia; copia = lista; adicionar(copia); } }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_subtarefa_pode_reatribuir_alias_para_lista_local(self):
+        ok("var lista = [1]; fork t { var copia = lista; "
+           "copia = [2]; copia.append(3); }")
+
     def test_subtarefa_pode_ler_variavel_externa_e_ter_variaveis_proprias(self):
         ok("var x = 1; fork t { var y = x + 1; y = y + 1; print(y); }")
 
@@ -379,6 +486,59 @@ class TestCanaisEParalelismo(unittest.TestCase):
         self.assertTrue(any("'par'" in m for m in msgs("par { return 1; }")))
         self.assertTrue(any("'break'" in m for m in msgs(
             "while (true) { fork t { break; } }")))
+
+    def test_fork_nao_confunde_metodos_homonimos_de_classes_distintas(self):
+        ok("var estado = 0; "
+           "class Segura { func executar() { print(1); } } "
+           "class Perigosa { func executar() { estado = 1; } } "
+           "func chamar() { var objeto = new Segura(); objeto.executar(); } "
+           "fork t { chamar(); }")
+
+    def test_fork_detecta_metodo_apos_reatribuicao_de_receptor_desconhecido(self):
+        m = msgs("var estado = 0; "
+                 "class Segura { func executar() { print(1); } } "
+                 "class Perigosa { func executar() { estado = 1; } } "
+                 "func criar() { return new Perigosa(); } "
+                 "func chamar() { var objeto = new Segura(); "
+                 "objeto = criar(); objeto.executar(); } "
+                 "fork t { chamar(); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
+
+    def test_fork_conserva_efeitos_de_metodo_com_receptor_sem_tipo_estatico(self):
+        m = msgs("var estado = 0; "
+                 "class Base { func executar() { print(1); } } "
+                 "class Derivada extends Base { func executar() { estado = 1; } } "
+                 "func chamar(objeto) { objeto.executar(); } "
+                 "fork t { var objeto = new Derivada(); chamar(objeto); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_construtor_que_altera_global(self):
+        m = msgs("var estado = 0; class C { func init() { estado = 1; } } "
+                 "fork t { var objeto = new C(); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_construtor_que_muta_parametro_global_transitivamente(self):
+        m = msgs("var lista = [1]; class C { func init(xs) { xs.append(2); } } "
+                 "func criar() { var objeto = new C(lista); } "
+                 "fork t { criar(); }")
+        self.assertTrue(any("lista" in x and "subtarefa" in x for x in m))
+
+    def test_fork_permite_construtor_que_muta_apenas_o_novo_receptor(self):
+        ok("class C { var valor = 0; func init(v) { this.valor = v; } } "
+           "fork t { var objeto = new C(10); }")
+
+    def test_fork_bloqueia_construtor_herdado_que_altera_global(self):
+        m = msgs("var estado = 0; class Base { func init() { estado = 1; } } "
+                 "class Derivada extends Base { } "
+                 "fork t { var objeto = new Derivada(); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
+
+    def test_fork_bloqueia_construtor_que_chama_metodo_com_efeito_global(self):
+        m = msgs("var estado = 0; class C { "
+                 "func atualizar() { estado = 1; } "
+                 "func init() { this.atualizar(); } } "
+                 "fork t { var objeto = new C(); }")
+        self.assertTrue(any("estado" in x and "subtarefa" in x for x in m))
 
     def test_fork_devolve_valor_para_o_join(self):
         a = ok("fork t { return 5; } var r = join t; print(r + 1);")
