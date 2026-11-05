@@ -74,6 +74,7 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         self._global_names: Set[str] = set()
         self._function_effects: Dict[str, Set[str]] = {}
         self._method_effects: Dict[int, Set[str]] = {}
+        self._task_aliases: Dict[str, Set[str]] = {}
 
         self.loop_depth = 0
         self.func_ctx: Optional[_FuncCtx] = None
@@ -447,13 +448,9 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         writes = set(effect["globals"])
         for index in effect["params"]:
             if index < len(args):
-                root = self._root_identifier(args[index])
-                if root is not None and root.name in self._global_names:
-                    writes.add(root.name)
+                writes.update(self._task_origins(args[index]))
         if effect["receiver"] and receiver is not None:
-            root = self._root_identifier(receiver)
-            if root is not None and root.name in self._global_names:
-                writes.add(root.name)
+            writes.update(self._task_origins(receiver))
         if writes:
             names = ", ".join(sorted(writes))
             self._error(
@@ -581,17 +578,21 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
 
     # ------------------------- PAR / FORK / JOIN ----------------------
     def _enter_task(self, result_ctx: Optional[_FuncCtx] = None, remote: bool = False):
-        saved = (self.loop_depth, self.func_ctx, self.in_task, self.task_ctx, self.in_remote_task)
+        saved = (self.loop_depth, self.func_ctx, self.in_task, self.task_ctx,
+                 self.in_remote_task, self._task_aliases)
         self.loop_depth = 0
         self.func_ctx = None
         self.in_task = True
         self.task_ctx = result_ctx
         self.in_remote_task = remote
+        # Subtarefas aninhadas herdam apenas a proveniência dos aliases conhecidos.
+        self._task_aliases = {name: set(origins)
+                              for name, origins in self._task_aliases.items()}
         return saved
 
     def _exit_task(self, saved) -> None:
         (self.loop_depth, self.func_ctx, self.in_task, self.task_ctx,
-         self.in_remote_task) = saved
+         self.in_remote_task, self._task_aliases) = saved
 
     def visit_ParBlock(self, node: ParBlock):
         for i, stmt in enumerate(node.statements):
@@ -657,6 +658,8 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
         itype: Optional[str] = None
         if node.init is not None:
             itype = self._value(node.init)
+        if node.init is not None:
+            self._record_task_alias(node.name, node.init)
         if declared == VOID:
             self._error(f"A variável '{node.name}' não pode ter tipo void", node)
             declared = UNKNOWN
@@ -681,16 +684,32 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             node = node.obj
         return node if isinstance(node, Identifier) else None
 
+    def _task_origins(self, expr: Expr) -> Set[str]:
+        root = self._root_identifier(expr)
+        if root is None:
+            return set()
+        if root.name in self._task_aliases:
+            return set(self._task_aliases[root.name])
+        found = self.table.resolve_with_scope(root.name)
+        if found is None:
+            return set()
+        _, scope = found
+        return {root.name} if self.table.crosses_isolation(scope) else set()
+
+    def _record_task_alias(self, name: str, expr: Expr) -> None:
+        if self.in_task:
+            origins = self._task_origins(expr)
+            if origins:
+                self._task_aliases.setdefault(name, set()).update(origins)
+
     def _check_isolation(self, target: Expr) -> None:
         root = self._root_identifier(target)
         if root is None:
             return
-        found = self.table.resolve_with_scope(root.name)
-        if found is None:
-            return
-        sym, scope = found
-        if self.table.crosses_isolation(scope):
-            self._error(f"A subtarefa (fork/par) não compartilha memória: '{root.name}' foi "
+        origins = self._task_origins(target)
+        if origins:
+            original = ", ".join(sorted(origins))
+            self._error(f"A subtarefa (fork/par) não compartilha memória: '{original}' foi "
                         f"declarada fora dela e não pode ser alterada aqui. Use um canal "
                         f"(send/receive) para comunicar resultados", target)
 
@@ -726,6 +745,8 @@ class SemanticAnalyzer(ISemanticAnalyzer, NodeVisitor):
             self.visit(target)
 
         self._check_isolation(target)
+        if isinstance(target, Identifier):
+            self._record_task_alias(target.name, node.value)
 
         if node.op == "=":
             if not self._assignable(ttype, vtype):
