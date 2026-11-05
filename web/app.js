@@ -1,6 +1,6 @@
 const $ = (s) => document.querySelector(s);
 const source = $("#source");
-let latest = null, activeTab = "tokens", execution = null;
+let latest = null, activeTab = "tokens", execution = null, editVersion = 0;
 function updateLines(){const n=source.value.split("\n").length;$("#line-count").textContent=n+(n===1?" linha":" linhas");}
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function errorBox(msg){const p=$("#errors");p.hidden=false;p.textContent=msg;}
@@ -14,15 +14,15 @@ function render(){if(!latest)return;const p=$("#stage-summary"),d=latest;if(acti
 function tab(name){activeTab=name;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("active",e.dataset.tab===name));render();}
 document.querySelectorAll(".tab").forEach(e=>e.addEventListener("click",()=>tab(e.dataset.tab)));
 function invalidateResults(){
-  latest=null;execution=null;
+  editVersion++;latest=null;execution=null;
   $("#count-tokens").textContent="—";
   $("#stage-summary").innerHTML='<div class="empty-state"><div class="empty-icon">⌘</div><h3>Código alterado</h3><p>Analise novamente para atualizar as etapas do compilador.</p></div>';
   clearError();status(true,"Aguardando nova análise");
 }
 source.addEventListener("input",()=>{updateLines();invalidateResults();});
-$("#reset").addEventListener("click",()=>{source.value="";latest=null;execution=null;updateLines();clearError();$("#stage-summary").innerHTML='<div class="empty-state"><div class="empty-icon">⌘</div><h3>Editor limpo</h3><p>Escreva um programa MiniPar para começar.</p></div>';status(true,"Aguardando análise");});
-$("#analyze").addEventListener("click",async()=>{clearError();execution=null;const b=$("#analyze");b.disabled=true;b.textContent="Analisando…";try{latest=await post("/api/analyze");$("#count-tokens").textContent=latest.tokens.length;status(latest.ok,latest.ok?"Análise concluída":"Erros encontrados");if(latest.errors&&latest.errors.length)errorBox(latest.errors.map(e=>e.phase+" · linha "+e.line+", coluna "+e.col+": "+e.message).join("\n"));tab("tokens");}catch(e){errorBox(e.message);status(false,"Falha na análise");}finally{b.disabled=false;b.textContent="▶ Analisar programa";}});
-$("#run").addEventListener("click",async()=>{clearError();const b=$("#run");b.disabled=true;b.textContent="Executando…";try{execution=await post("/api/run");status(execution.ok,execution.ok?"Execução concluída":"Falha na execução");if(!execution.ok)errorBox(execution.stderr||"O programa terminou com erro.");tab("output");}catch(e){errorBox(e.message);status(false,"Falha na execução");}finally{b.disabled=false;b.textContent="Executar";}});
+$("#reset").addEventListener("click",()=>{source.value="";invalidateResults();updateLines();$("#stage-summary").innerHTML='<div class="empty-state"><div class="empty-icon">⌘</div><h3>Editor limpo</h3><p>Escreva um programa MiniPar para começar.</p></div>';status(true,"Aguardando análise");});
+$("#analyze").addEventListener("click",async()=>{clearError();execution=null;const b=$("#analyze");b.disabled=true;b.textContent="Analisando…";const version=editVersion;try{const result=await post("/api/analyze");if(version!==editVersion)return;latest=result;$("#count-tokens").textContent=latest.tokens.length;status(latest.ok,latest.ok?"Análise concluída":"Erros encontrados");if(latest.errors&&latest.errors.length)errorBox(latest.errors.map(e=>e.phase+" · linha "+e.line+", coluna "+e.col+": "+e.message).join("\n"));tab("tokens");}catch(e){if(version===editVersion){errorBox(e.message);status(false,"Falha na análise");}}finally{b.disabled=false;b.textContent="▶ Analisar programa";}});
+$("#run").addEventListener("click",async()=>{clearError();const b=$("#run");b.disabled=true;b.textContent="Executando…";const version=editVersion;try{const result=await post("/api/run");if(version!==editVersion)return;execution=result;status(execution.ok,execution.ok?"Execução concluída":"Falha na execução");if(!execution.ok)errorBox(execution.stderr||"O programa terminou com erro.");tab("output");}catch(e){if(version===editVersion){errorBox(e.message);status(false,"Falha na execução");}}finally{b.disabled=false;b.textContent="Executar";}});
 async function examples(){try{const r=await fetch("/api/examples"),d=await r.json();d.examples.forEach(name=>{const o=document.createElement("option");o.value=name;o.textContent=name;$("#examples").append(o);});}catch(e){errorBox("Não foi possível carregar exemplos.");}}
 $("#examples").addEventListener("change",async e=>{if(!e.target.value)return;try{const r=await fetch("/api/examples/"+encodeURIComponent(e.target.value)),d=await r.json();source.value=d.source;updateLines();invalidateResults();}catch(err){errorBox(err.message);}});
 updateLines();examples();
