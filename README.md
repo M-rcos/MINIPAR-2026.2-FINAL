@@ -25,7 +25,7 @@ Use `python run_tests.py` no lugar de `make test`.
 - `src/minipar/webapp.py` e `web/`: segunda interface Web didática
 - `tests/`: testes automatizados
 - `exemplos/`: programas MiniPar e saídas de referência
-- `docs/`: gramática, regras, arquitetura e documentação
+- `docs/`: gramática, regras, [arquitetura](docs/ARQUITETURA.md), [diagramas UML em PlantUML](docs/uml/) e documentação
 - `evidencias/`: capturas reais de execução para o relatório
 
 ## Uso da CLI
