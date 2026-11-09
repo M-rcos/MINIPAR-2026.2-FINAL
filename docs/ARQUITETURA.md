@@ -10,14 +10,14 @@ MiniPar, realiza as análises léxica, sintática e semântica, gera uma
 representação intermediária de três endereços (TAC), traduz o TAC para C++ e
 pode chamar o GCC/G++ para produzir um executável.
 
-Há duas interfaces de acesso ao compilador:
+Há duas interfaces de acesso:
 
 - **CLI:** comandos executados no terminal.
 - **Interface Web:** aplicação local com editor e visualização das etapas.
 
-As duas interfaces utilizam os componentes do compilador. A interface Web
-também apresenta os resultados das etapas de análise e oferece compilação e
-execução local.
+As interfaces oferecem acesso às funcionalidades do compilador. A CLI utiliza
+o pipeline para operações de compilação; a interface Web chama as etapas de
+análise para apresentar seus resultados e usa o pipeline na geração C++.
 
 ## 2. Fluxo de compilação
 
@@ -27,19 +27,19 @@ execução local.
 3. **Análise sintática:** `Parser` recebe os tokens e constrói a AST
    (`Program` e seus nós). Erros sintáticos são registrados.
 4. **Análise semântica:** se não houver erros léxicos ou sintáticos,
-   `SemanticAnalyzer` percorre a AST, verifica regras semânticas e constrói
-   a tabela de símbolos.
-5. **Código intermediário:** `TACGenerator` utiliza a AST validada e os
-   resultados do analisador semântico para produzir um `TACProgram`.
+   `SemanticAnalyzer` percorre a AST e constrói a tabela de símbolos.
+5. **Código intermediário:** `TACGenerator` recebe a AST e o analisador
+   semântico e produz um `TACProgram`.
 6. **Geração C++:** `CppGenerator` traduz o `TACProgram` em código-fonte C++.
-7. **Compilação nativa:** `build_executable` grava o C++, copia
-   `minipar_runtime.hpp` para a pasta de saída e invoca GCC/G++ com C++17 e
-   suporte a threads (`-pthread`).
+7. **Compilação nativa:** `build_executable`, no módulo de driver, grava o
+   C++, copia `minipar_runtime.hpp` para a pasta de saída e invoca GCC/G++
+   com C++17 e suporte a threads (`-pthread`). Em caso de sucesso, retorna
+   um `BuildResult`; falhas de compilação são reportadas por `BuildError`.
 8. **Execução:** o executável gerado utiliza o runtime MiniPar. Na interface
-   Web, compilação e execução são realizadas em diretório temporário e com
-   limites de tempo e de saída.
+   Web, compilação e execução ocorrem em diretório temporário e com limites
+   de tempo e de saída.
 
-O fluxo principal pode ser resumido assim:
+O fluxo de compilação pelo pipeline pode ser resumido assim:
 
 ```text
 Código MiniPar
@@ -75,13 +75,13 @@ Da mesma forma, a geração TAC depende de uma análise semântica sem erros.
 |---|---|---|
 | Analisador léxico | `Lexer` / `ILexer` | Reconhecer tokens e reportar erros léxicos. |
 | Analisador sintático | `Parser` / `IParser` | Aplicar a gramática e construir a AST. |
-| AST | `Program`, `Stmt`, `Expr` e demais nós | Representar a estrutura do programa. |
-| Analisador semântico | `SemanticAnalyzer` / `ISemanticAnalyzer` | Verificar declarações, tipos, escopos, funções, classes, canais e tarefas. |
+| AST | `Program`, `Stmt`, `Expr` e demais nós | Representar a estrutura do programa, incluindo declarações, comandos, tarefas paralelas e canais. |
+| Analisador semântico | `SemanticAnalyzer` / `ISemanticAnalyzer` | Verificar regras semânticas e produzir informações para as etapas seguintes. |
 | Tabela de símbolos | `SymbolTable` / `ISymbolTable` | Manter símbolos e escopos hierárquicos. |
-| Gerador TAC | `TACGenerator` / `ITACGenerator` | Traduzir a AST validada em instruções de três endereços. |
+| Gerador TAC | `TACGenerator` / `ITACGenerator` | Traduzir a AST validada em uma estrutura TAC. |
 | Gerador C++ | `CppGenerator` / `ICodeGenerator` | Traduzir o programa TAC em C++. |
-| Driver de compilação | `build_executable` | Gravar C++, preparar runtime e invocar GCC/G++. |
-| Runtime | `minipar_runtime.hpp` | Oferecer as operações de execução utilizadas pelo código gerado, incluindo recursos paralelos e canais. |
+| Driver de compilação | `build_executable` | Gravar C++, preparar o runtime e invocar GCC/G++. |
+| Runtime | `minipar_runtime.hpp` | Oferecer operações utilizadas pelo código gerado, incluindo recursos paralelos e canais. |
 | CLI | `cli.py` | Disponibilizar comandos de análise, geração, compilação e execução no terminal. |
 | Interface Web | `webapp.py` e diretório `web/` | Disponibilizar análise e execução local por navegador. |
 
@@ -130,13 +130,17 @@ pública.
 ## 5. Estruturas de dados relevantes
 
 - **AST:** os nós derivam de `Node`; comandos derivam de `Stmt` e expressões
-  derivam de `Expr`. `Program` agrega os nós do programa.
+  derivam de `Expr`. `Program` agrega os nós do programa. Entre as
+  construções representadas estão declarações de canais, blocos paralelos,
+  operações `fork` e `join`, além de comandos e expressões convencionais.
 - **Tabela de símbolos:** `SymbolTable` mantém o escopo global e o escopo
-  corrente. Cada `Scope` pode possuir escopo pai e escopos filhos. Os
-  `Symbol` representam variáveis, parâmetros, funções, métodos, classes,
-  atributos, canais e subtarefas.
-- **TAC:** `TACProgram` agrega funções, classes, canais, globais e
-  instruções representadas por `TACInstr`.
+  corrente. Cada `Scope` registra símbolos, escopos filhos e uma referência
+  ao escopo pai. Um `Symbol` registra nome, categoria, tipo e posição no
+  código; conforme a categoria, também pode conter parâmetros, retorno,
+  informações de classe, proprietário ou extremos de canal.
+- **TAC:** `TACProgram` agrega `globals`, `channels`, `classes` e
+  `functions`. As instruções `TACInstr` ficam dentro de cada
+  `TACFunction`, na coleção `instrs`.
 - **Compilação:** `BuildResult` informa os caminhos do fonte C++ e do
   executável, o comando usado e a saída do compilador.
 
@@ -152,7 +156,7 @@ isoladamente.
 
 ## 7. Diagramas UML
 
-Os arquivos PlantUML correspondem às três modelagens solicitadas:
+Os arquivos PlantUML correspondem às três modelagens:
 
 1. [Diagrama de casos de uso](uml/casos-de-uso.puml).
 2. [Diagrama de componentes](uml/componentes.puml).
