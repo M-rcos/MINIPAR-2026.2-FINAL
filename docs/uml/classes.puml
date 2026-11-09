@@ -1,0 +1,142 @@
+@startuml
+title MiniPar 2026.2 — Diagrama de Classes (visão dos componentes)
+skinparam classAttributeIconSize 0
+hide empty members
+
+package "Léxico" {
+  interface ILexer {
+    +tokenize() : List<Token>
+    +errors : List<MiniParError>
+  }
+  class Lexer {
+    -_src : str
+    -_errors : List<MiniParError>
+    +tokenize() : List<Token>
+    +errors : List<MiniParError>
+  }
+  class Token
+  ILexer <|.. Lexer
+  Lexer --> Token : produz
+}
+
+package "Sintático / AST" {
+  interface IParser {
+    +parse() : Program
+    +errors : List<MiniParError>
+  }
+  class Parser {
+    -_toks : List<Token>
+    -_errors : List<MiniParError>
+    +parse() : Program
+    +errors : List<MiniParError>
+  }
+  abstract class Node
+  abstract class Stmt
+  abstract class Expr
+  class Program
+  class VarDecl
+  class FuncDecl
+  class ClassDecl
+  class Binary
+  class Identifier
+  IParser <|.. Parser
+  Parser --> Token : recebe
+  Parser --> Program : constrói
+  Node <|-- Stmt
+  Node <|-- Expr
+  Node <|-- Program
+  Stmt <|-- VarDecl
+  Stmt <|-- FuncDecl
+  Stmt <|-- ClassDecl
+  Expr <|-- Binary
+  Expr <|-- Identifier
+  Program o-- "0..*" Node : body
+}
+
+package "Semântico / Símbolos" {
+  interface ISemanticAnalyzer {
+    +analyze(program: Program) : List<MiniParError>
+    +symbol_table : SymbolTable
+  }
+  class SemanticAnalyzer {
+    +analyze(program: Program) : List<MiniParError>
+    +symbol_table : SymbolTable
+  }
+  interface ISymbolTable {
+    +enter_scope(name, isolated)
+    +exit_scope()
+    +define(symbol: Symbol)
+    +resolve(name) : Symbol
+  }
+  class SymbolTable {
+    +global_scope : Scope
+    +current : Scope
+    +enter_scope(name, isolated) : Scope
+    +exit_scope()
+    +define(symbol: Symbol)
+    +resolve(name) : Symbol
+  }
+  class Scope {
+    +name : str
+    +parent : Scope
+    +isolated : bool
+    +symbols : Dict
+    +children : List
+  }
+  class Symbol
+  class ClassInfo
+  class ParamInfo
+  ISemanticAnalyzer <|.. SemanticAnalyzer
+  ISymbolTable <|.. SymbolTable
+  SemanticAnalyzer --> Program : visita
+  SemanticAnalyzer --> SymbolTable : constrói / consulta
+  SymbolTable *-- Scope
+  Scope --> "0..*" Scope : children
+  Scope o-- "0..*" Symbol
+  Symbol o-- ClassInfo
+  Symbol --> "0..*" ParamInfo
+}
+
+package "Código intermediário" {
+  interface ITACGenerator {
+    +generate(program: Program) : TACProgram
+  }
+  class TACGenerator {
+    +generate(program: Program) : TACProgram
+  }
+  class TACProgram
+  class TACFunction
+  class TACClass
+  class TACInstr
+  ITACGenerator <|.. TACGenerator
+  TACGenerator --> SemanticAnalyzer : usa resultados
+  TACGenerator --> Program : percorre
+  TACProgram *-- "0..*" TACFunction
+  TACProgram *-- "0..*" TACClass
+  TACFunction *-- "0..*" TACInstr
+}
+
+package "Geração e compilação" {
+  interface ICodeGenerator {
+    +generate(program: TACProgram) : str
+  }
+  class CppGenerator {
+    +generate(program: TACProgram) : str
+  }
+  class BuildResult {
+    +cpp_path : Path
+    +exe_path : Path
+    +command : List
+    +compiler_output : str
+  }
+  class BuildError
+  ICodeGenerator <|.. CppGenerator
+  CppGenerator --> TACProgram : recebe
+  CppGenerator ..> BuildResult : fonte consumida pelo driver
+  BuildResult ..> BuildError
+}
+
+Lexer --> Parser : tokens
+SemanticAnalyzer --> TACGenerator : análise concluída
+TACGenerator --> CppGenerator : TACProgram
+@enduml
