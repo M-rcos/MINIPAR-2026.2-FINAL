@@ -1,64 +1,75 @@
 @startuml
 title MiniPar 2026.2 — Diagrama de Componentes
-left to right direction
+top to bottom direction
 skinparam componentStyle rectangle
 skinparam packageStyle rectangle
+skinparam linetype ortho
 
 actor "Usuário" as user
+cloud "GCC / G++\n(compilador externo)" as gcc
 
 package "Interfaces de acesso" {
   [CLI] as cli
-  [Interface Web] as web
-  [Frontend Web\n(HTML/CSS/JS)] as frontend
+  [Frontend Web\n(HTML / CSS / JavaScript)] as frontend
+  [Servidor Web\n(webapp.py / HTTP local)] as web
 }
 
 package "Compilador MiniPar (Python)" {
-  [Pipeline] as pipeline
-  component "Analisador Léxico\nLexer" as lexer
-  component "Analisador Sintático\nParser" as parser
-  component "Analisador Semântico\nSemanticAnalyzer" as semantic
-  component "Tabela de Símbolos\nSymbolTable" as symtable
-  component "Gerador TAC\nTACGenerator" as tac
-  component "Gerador C++\nCppGenerator" as cppgen
-  component "Driver de compilação\n(build_executable)" as driver
+  [Pipeline\n(front_end / to_tac / to_cpp)] as pipeline
+  component "Lexer" as lexer
+  component "Parser" as parser
   component "AST\n(Program / Nodes)" as ast
-  component "Programa TAC\n(TACProgram)" as tacdata
+  component "SemanticAnalyzer" as semantic
+  component "SymbolTable\n(Scope / Symbol)" as symtable
+  component "TACGenerator" as tac
+  component "TACProgram\n(functions / classes / channels / globals)" as tacdata
+  component "CppGenerator" as cppgen
+  component "Driver\n(build_executable)" as driver
 }
 
-package "Execução" {
+package "Ambiente de execução" {
   component "Runtime MiniPar\n(minipar_runtime.hpp)" as runtime
   component "Executável C++" as exe
 }
 
-cloud "GCC / G++\nexterno" as gcc
-
 user --> cli
 user --> frontend
 frontend --> web : HTTP local
-cli --> pipeline
-web --> pipeline : usa etapas do compilador
+cli --> pipeline : comandos
+web --> lexer : tokens
+web --> parser : AST
+web --> semantic : análise
+web --> symtable : consulta resultados
+web --> tac : geração TAC
+web --> pipeline : geração C++ (to_cpp)
 pipeline --> lexer
+pipeline --> parser
+pipeline --> semantic
+pipeline --> tac
 lexer --> parser : tokens
 parser --> ast : constrói
-parser --> semantic : AST
-semantic --> symtable : consulta / constrói
-semantic --> tac : semântica validada
-tac --> tacdata : gera
-tacdata --> cppgen : entrada TAC
-cppgen --> driver : fonte C++
-driver --> gcc : compila\nC++17 / pthread
+semantic --> ast : percorre
+semantic --> symtable : constrói / consulta
+tac --> ast : percorre
+tac --> semantic : consulta análise
+tac --> tacdata : produz
+cppgen --> tacdata : recebe
+pipeline --> cppgen : via to_cpp
+web --> driver : compilar / executar
+cli --> driver : build
+driver --> gcc : compila C++17 / pthread
 driver --> runtime : copia cabeçalho
 gcc --> exe : produz
-exe --> runtime : inclui / utiliza
+exe ..> runtime : inclui e utiliza
 
-note bottom of pipeline
+note right of pipeline
   front_end: léxico, sintático e semântico
   to_tac: valida e gera TAC
   to_cpp: gera C++ a partir do TAC
 end note
 
-note bottom of runtime
-  O runtime dá suporte à execução,
-  incluindo tarefas paralelas e canais.
+note right of runtime
+  Suporte de execução para tarefas
+  paralelas e comunicação por canais.
 end note
 @enduml
