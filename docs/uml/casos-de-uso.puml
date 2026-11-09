@@ -4,23 +4,22 @@ left to right direction
 skinparam packageStyle rectangle
 
 actor "Estudante / Usuário" as Usuario
-actor "GCC (compilador C++)" as GCC
+actor "GCC / G++" as GCC
 
 rectangle "Compilador MiniPar 2026.2" {
-  usecase "Carregar programa\nMiniPar" as UC1
-  usecase "Analisar tokens" as UC2
-  usecase "Visualizar AST" as UC3
-  usecase "Verificar semântica" as UC4
-  usecase "Consultar tabela\nde símbolos" as UC5
-  usecase "Gerar código TAC" as UC6
-  usecase "Gerar código C++" as UC7
-  usecase "Compilar programa" as UC8
-  usecase "Executar programa" as UC9
-  usecase "Consultar erros" as UC10
-  usecase "Escolher interface\n(CLI ou Web)" as UC11
+  usecase "Escolher interface\n(CLI ou Web)" as UC1
+  usecase "Carregar programa\nMiniPar" as UC2
+  usecase "Analisar tokens" as UC3
+  usecase "Visualizar AST" as UC4
+  usecase "Verificar semântica" as UC5
+  usecase "Consultar tabela\nde símbolos" as UC6
+  usecase "Gerar código TAC" as UC7
+  usecase "Gerar código C++" as UC8
+  usecase "Compilar programa" as UC9
+  usecase "Executar programa" as UC10
+  usecase "Consultar erros" as UC11
 }
 
-Usuario --> UC11
 Usuario --> UC1
 Usuario --> UC2
 Usuario --> UC3
@@ -31,16 +30,19 @@ Usuario --> UC7
 Usuario --> UC8
 Usuario --> UC9
 Usuario --> UC10
+Usuario --> UC11
 
-UC8 .> UC7 : <<include>>
-UC9 .> UC8 : <<include>>
-UC5 .> UC4 : <<extend>>
-UC10 .> UC2 : <<extend>>
-UC10 .> UC4 : <<extend>>
-GCC --> UC8
+UC9 ..> UC8 : <<include>>
+UC10 ..> UC9 : <<include>>
+GCC --> UC9
+
+note bottom of UC1
+  CLI e interface Web são formas de acesso
+  às funcionalidades do compilador.
+end note
 
 note bottom of UC11
-  A CLI e a interface Web são duas formas
-  de acessar as funcionalidades do compilador.
+  Erros podem ser consultados quando
+  uma etapa de análise ou compilação falha.
 end note
 @enduml
