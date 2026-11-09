@@ -1,0 +1,64 @@
+@startuml
+title MiniPar 2026.2 — Diagrama de Componentes
+left to right direction
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+
+actor "Usuário" as user
+
+package "Interfaces de acesso" {
+  [CLI] as cli
+  [Interface Web] as web
+  [Frontend Web\n(HTML/CSS/JS)] as frontend
+}
+
+package "Compilador MiniPar (Python)" {
+  [Pipeline] as pipeline
+  component "Analisador Léxico\nLexer" as lexer
+  component "Analisador Sintático\nParser" as parser
+  component "Analisador Semântico\nSemanticAnalyzer" as semantic
+  component "Tabela de Símbolos\nSymbolTable" as symtable
+  component "Gerador TAC\nTACGenerator" as tac
+  component "Gerador C++\nCppGenerator" as cppgen
+  component "Driver de compilação\n(build_executable)" as driver
+  component "AST\n(Program / Nodes)" as ast
+  component "Programa TAC\n(TACProgram)" as tacdata
+}
+
+package "Execução" {
+  component "Runtime MiniPar\n(minipar_runtime.hpp)" as runtime
+  component "Executável C++" as exe
+}
+
+cloud "GCC / G++\nexterno" as gcc
+
+user --> cli
+user --> frontend
+frontend --> web : HTTP local
+cli --> pipeline
+web --> pipeline : usa etapas do compilador
+pipeline --> lexer
+lexer --> parser : tokens
+parser --> ast : constrói
+parser --> semantic : AST
+semantic --> symtable : consulta / constrói
+semantic --> tac : semântica validada
+tac --> tacdata : gera
+tacdata --> cppgen : entrada TAC
+cppgen --> driver : fonte C++
+driver --> gcc : compila\nC++17 / pthread
+driver --> runtime : copia cabeçalho
+gcc --> exe : produz
+exe --> runtime : inclui / utiliza
+
+note bottom of pipeline
+  front_end: léxico, sintático e semântico
+  to_tac: valida e gera TAC
+  to_cpp: gera C++ a partir do TAC
+end note
+
+note bottom of runtime
+  O runtime dá suporte à execução,
+  incluindo tarefas paralelas e canais.
+end note
+@enduml
