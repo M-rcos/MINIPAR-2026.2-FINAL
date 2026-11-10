@@ -1,0 +1,48 @@
+@startuml
+title MiniPar 2026.2 — Diagrama de Casos de Uso
+left to right direction
+skinparam packageStyle rectangle
+
+actor "Estudante / Usuário" as Usuario
+actor "GCC / G++" as GCC
+
+rectangle "Compilador MiniPar 2026.2" {
+  usecase "Escolher interface\n(CLI ou Web)" as UC1
+  usecase "Carregar programa\nMiniPar" as UC2
+  usecase "Analisar tokens" as UC3
+  usecase "Visualizar AST" as UC4
+  usecase "Verificar semântica" as UC5
+  usecase "Consultar tabela\nde símbolos" as UC6
+  usecase "Gerar código TAC" as UC7
+  usecase "Gerar código C++" as UC8
+  usecase "Compilar programa" as UC9
+  usecase "Executar programa" as UC10
+  usecase "Consultar erros" as UC11
+}
+
+Usuario --> UC1
+Usuario --> UC2
+Usuario --> UC3
+Usuario --> UC4
+Usuario --> UC5
+Usuario --> UC6
+Usuario --> UC7
+Usuario --> UC8
+Usuario --> UC9
+Usuario --> UC10
+Usuario --> UC11
+
+UC9 ..> UC8 : <<include>>
+UC10 ..> UC9 : <<include>>
+GCC --> UC9
+
+note bottom of UC1
+  CLI e interface Web são formas de acesso
+  às funcionalidades do compilador.
+end note
+
+note bottom of UC11
+  Erros podem ser consultados quando
+  uma etapa de análise ou compilação falha.
+end note
+@enduml

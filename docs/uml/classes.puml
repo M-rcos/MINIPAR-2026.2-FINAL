@@ -1,0 +1,198 @@
+@startuml
+title MiniPar 2026.2 — Diagrama de Classes (visão estrutural)
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+hide empty members
+
+package "Léxico" {
+  interface ILexer {
+    +tokenize() : List<Token>
+    +errors : List<MiniParError>
+  }
+  class Lexer {
+    -_src : str
+    -_errors : List<MiniParError>
+    +tokenize() : List<Token>
+    +errors : List<MiniParError>
+  }
+  class Token
+  ILexer <|.. Lexer
+  Lexer ..> Token : produz
+}
+
+package "Sintático / AST" {
+  interface IParser {
+    +parse() : Program
+    +errors : List<MiniParError>
+  }
+  class Parser {
+    -_toks : List<Token>
+    -_errors : List<MiniParError>
+    +parse() : Program
+    +errors : List<MiniParError>
+  }
+  abstract class Node
+  abstract class Stmt
+  abstract class Expr
+  class Program
+  class VarDecl
+  class FuncDecl
+  class ClassDecl
+  class ChannelDecl
+  class ParBlock
+  class Fork
+  class Join
+  class Binary
+  class Identifier
+
+  IParser <|.. Parser
+  Parser ..> Token : recebe
+  Parser ..> Program : constrói
+  Node <|-- Stmt
+  Node <|-- Expr
+  Node <|-- Program
+  Stmt <|-- VarDecl
+  Stmt <|-- FuncDecl
+  Stmt <|-- ClassDecl
+  Stmt <|-- ChannelDecl
+  Stmt <|-- ParBlock
+  Stmt <|-- Fork
+  Stmt <|-- Join
+  Expr <|-- Binary
+  Expr <|-- Identifier
+  Program o-- "0..*" Node : body
+}
+
+package "Semântico / Tabela de símbolos" {
+  interface ISemanticAnalyzer {
+    +analyze(program: Program) : List<MiniParError>
+    +symbol_table : SymbolTable
+  }
+  class SemanticAnalyzer {
+    +analyze(program: Program) : List<MiniParError>
+    +symbol_table : SymbolTable
+  }
+  interface ISymbolTable {
+    +enter_scope(name, isolated)
+    +exit_scope() : None
+    +define(symbol: Symbol) : Optional<Symbol>
+    +resolve(name: str) : Optional<Symbol>
+  }
+  class SymbolTable {
+    +global_scope : Scope
+    +current : Scope
+    +enter_scope(name, isolated)
+    +exit_scope() : None
+    +define(symbol: Symbol) : Optional<Symbol>
+    +resolve(name: str) : Optional<Symbol>
+  }
+  class Scope {
+    +name : str
+    +parent : Optional<Scope>
+    +isolated : bool
+    +symbols : Dict[str, Symbol]
+    +children : List[Scope]
+  }
+  class Symbol {
+    +name : str
+    +kind : str
+    +type : str
+    +line : int
+    +col : int
+    +params : Optional[List<ParamInfo]>
+    +return_type : str
+    +class_info : Optional<ClassInfo>
+    +owner : Optional[str]
+    +endpoints : Optional[tuple]
+  }
+  class ClassInfo {
+    +name : str
+    +superclass : Optional[str]
+    +attributes : Dict[str, Symbol]
+    +methods : Dict[str, Symbol]
+  }
+  class ParamInfo {
+    +name : str
+    +type : str
+  }
+  ISemanticAnalyzer <|.. SemanticAnalyzer
+  ISymbolTable <|.. SymbolTable
+  SemanticAnalyzer ..> Program : analisa
+  SemanticAnalyzer *-- SymbolTable
+  SymbolTable *-- Scope : escopos
+  Scope o-- "0..*" Scope : children
+  Scope o-- "0..*" Symbol : symbols
+  Symbol o-- "0..1" ClassInfo : class_info
+  Symbol o-- "0..*" ParamInfo : params
+}
+
+package "Código intermediário" {
+  interface ITACGenerator {
+    +generate(program: Program) : TACProgram
+  }
+  class TACGenerator {
+    +generate(program: Program) : TACProgram
+  }
+  class TACProgram {
+    +globals
+    +channels
+    +classes : List[TACClass]
+    +functions : List[TACFunction]
+  }
+  class TACFunction {
+    +name : str
+    +params
+    +instrs : List[TACInstr]
+    +is_task : bool
+  }
+  class TACClass {
+    +name : str
+    +superclass
+    +fields
+    +methods
+  }
+  class TACInstr {
+    +op
+    +dst
+    +a
+    +b
+    +c
+    +extra
+    +args
+  }
+  ITACGenerator <|.. TACGenerator
+  TACGenerator ..> Program : percorre
+  TACGenerator ..> SemanticAnalyzer : consulta
+  TACGenerator ..> TACProgram : produz
+  TACProgram *-- "0..*" TACFunction
+  TACProgram *-- "0..*" TACClass
+  TACFunction *-- "0..*" TACInstr
+}
+
+package "Geração e compilação" {
+  interface ICodeGenerator {
+    +generate(program: TACProgram) : str
+  }
+  class CppGenerator {
+    +generate(program: TACProgram) : str
+  }
+  class BuildResult {
+    +cpp_path : Path
+    +exe_path : Path
+    +command : List[str]
+    +compiler_output : str
+  }
+  class BuildError <<Exception>>
+  class "build_executable()" as BuildDriver <<função do módulo driver>>
+
+  ICodeGenerator <|.. CppGenerator
+  CppGenerator ..> TACProgram : recebe
+  BuildDriver ..> CppGenerator : utiliza via pipeline
+  BuildDriver ..> BuildResult : retorna
+  BuildDriver ..> BuildError : pode lançar
+}
+
+Lexer ..> Parser : fornece tokens
+SemanticAnalyzer ..> TACGenerator : análise semântica
+TACGenerator ..> CppGenerator : TACProgram
+@enduml

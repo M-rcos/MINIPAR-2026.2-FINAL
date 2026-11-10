@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="pt-BR"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#101827"><title>MiniPar 2026.2 · Laboratório do Compilador</title>
+<link rel="stylesheet" href="/style.css"></head><body>
+<header class="topbar"><a class="brand" href="/"><span class="brand-mark">M</span><span>MiniPar <small>2026.2</small></span></a><div class="top-meta"><span class="live-dot"></span> Laboratório educacional <span class="version">Interface Web 2</span></div></header>
+<main class="shell">
+<section class="intro"><div><p class="eyebrow">COMPILADOR · APRENDIZADO VISUAL</p><h1>Entenda cada etapa da compilação.</h1><p class="subhead">Escreva um programa MiniPar e acompanhe como o código se transforma, do primeiro token ao C++ gerado.</p></div><div class="flow"><span>Fonte</span><i>→</i><span>Léxico</span><i>→</i><span>Sintático</span><i>→</i><span>Semântico</span><i>→</i><span>TAC</span><i>→</i><span>C++</span></div></section>
+<section class="workspace">
+<aside class="editor-panel"><div class="panel-head"><div><span class="kicker">01 / ENTRADA</span><h2>Seu programa</h2></div><span class="file-pill">programa.mp</span></div>
+<div class="editor-actions"><label for="examples">Exemplos</label><select id="examples"><option value="">Escolha um programa…</option></select><button id="reset" class="ghost">Limpar</button></div>
+<textarea id="source" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Código fonte MiniPar">var numero = 7;
+print("Resultado:", numero * 6);
+</textarea><div class="editor-foot"><span id="line-count">2 linhas</span><span>MiniPar 2026.2</span></div>
+<div class="action-row"><button id="analyze" class="primary">▶ Analisar programa</button><button id="run" class="secondary">Executar</button></div>
+<p class="hint">A execução compila com GCC em uma pasta temporária. O servidor local precisa de Python 3 e GCC.</p></aside>
+<section class="results-panel"><div class="panel-head result-heading"><div><span class="kicker">02 / INSPEÇÃO</span><h2>Pipeline do compilador</h2></div><span id="overall-status" class="status idle">Aguardando análise</span></div>
+<nav class="tabs" aria-label="Etapas da compilação"><button class="tab active" data-tab="tokens">Tokens <span id="count-tokens">—</span></button><button class="tab" data-tab="ast">AST</button><button class="tab" data-tab="semantic">Semântica</button><button class="tab" data-tab="tac">TAC</button><button class="tab" data-tab="cpp">C++</button><button class="tab" data-tab="output">Saída</button></nav>
+<div id="stage-summary" class="stage-summary"><div class="empty-state"><div class="empty-icon">⌘</div><h3>Pronto para compilar</h3><p>Selecione um exemplo ou escreva código. Cada aba apresenta uma etapa do processo.</p></div></div><div id="errors" class="errors" hidden></div></section></section>
+<footer><span>MiniPar 2026.2 · UFAL / Instituto de Computação</span><span>Interface didática adicional · execução local</span></footer></main>
+<script src="/app.js" defer></script></body></html>

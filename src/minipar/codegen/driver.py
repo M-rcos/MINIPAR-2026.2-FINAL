@@ -43,7 +43,8 @@ def find_compiler() -> str:
 
 def build_executable(source_path: str, out_dir: str = "build", opt: str = "2",
                      exe_name: Optional[str] = None,
-                     extra_flags: Sequence[str] = ()) -> BuildResult:
+                     extra_flags: Sequence[str] = (),
+                     timeout: Optional[float] = None) -> BuildResult:
     """Compila um programa MiniPar até o executável.
 
     Levanta ``CompileErrors`` (erros do programa) ou ``BuildError`` (erro do GCC).
@@ -69,7 +70,7 @@ def build_executable(source_path: str, out_dir: str = "build", opt: str = "2",
         cmd += ["-static", "-lws2_32"]
     cmd += list(extra_flags)
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     output = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
         raise BuildError("Falha ao compilar o C++ gerado:\n" + output)
