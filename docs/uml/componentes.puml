@@ -1,4 +1,4 @@
-@startuml
+--help@startuml
 title MiniPar 2026.2 — Diagrama de Componentes
 top to bottom direction
 skinparam componentStyle rectangle
@@ -46,7 +46,7 @@ pipeline --> lexer
 pipeline --> parser
 pipeline --> semantic
 pipeline --> tac
-lexer --> parser : tokens
+parser --> lexer : consome tokens
 parser --> ast : constrói
 semantic --> ast : percorre
 semantic --> symtable : constrói / consulta
@@ -57,10 +57,13 @@ cppgen --> tacdata : recebe
 pipeline --> cppgen : via to_cpp
 web --> driver : compilar / executar
 cli --> driver : build
+driver --> pipeline : to_cpp
 driver --> gcc : compila C++17 / pthread
 driver --> runtime : copia cabeçalho
 gcc --> exe : produz
 exe ..> runtime : inclui e utiliza
+cli --> exe : run (executa)
+web --> exe : /api/run (executa)
 
 note right of pipeline
   front_end: léxico, sintático e semântico
