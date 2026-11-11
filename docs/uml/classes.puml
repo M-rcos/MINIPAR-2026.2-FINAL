@@ -99,7 +99,7 @@ package "Semântico / Tabela de símbolos" {
     +type : str
     +line : int
     +col : int
-    +params : Optional[List<ParamInfo]>
+    +params : Optional[List[ParamInfo]]
     +return_type : str
     +class_info : Optional<ClassInfo>
     +owner : Optional[str]
@@ -192,7 +192,4 @@ package "Geração e compilação" {
   BuildDriver ..> BuildError : pode lançar
 }
 
-Lexer ..> Parser : fornece tokens
-SemanticAnalyzer ..> TACGenerator : análise semântica
-TACGenerator ..> CppGenerator : TACProgram
 @enduml
