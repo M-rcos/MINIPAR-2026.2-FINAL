@@ -75,6 +75,16 @@ class WebAppServiceTests(unittest.TestCase):
         # Bytes arbitrários precisam virar texto UTF-8 serializável no endpoint.
         json.dumps(result, ensure_ascii=False)
 
+    def test_bounded_process_receives_preloaded_stdin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = _run_bounded_process(
+                [sys.executable, "-c", "import sys; print(sys.stdin.readline().strip())"],
+                Path(temp), timeout=5, stdin_text="((2+4)*7)-(5*4)\\n",
+            )
+
+        self.assertTrue(result["ok"], result["stderr"])
+        self.assertEqual(result["stdout"], "((2+4)*7)-(5*4)\\n")
+
     def test_execution_output_is_capped_across_both_streams(self):
         import minipar.webapp as webapp
 
