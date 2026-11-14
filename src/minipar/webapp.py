@@ -1,6 +1,6 @@
 """Interface Web didática local do MiniPar 2026.2."""
 from __future__ import annotations
-import argparse, ipaddress, json, os, signal, subprocess, tempfile, threading
+import argparse, ipaddress, json, os, re, signal, subprocess, tempfile, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -13,8 +13,7 @@ from .pipeline import to_cpp
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR, EXAMPLES_DIR = ROOT / "web", ROOT / "exemplos"
-# Fork remoto ainda não é orquestrado pela interface Web.
-WEB_EXCLUDED_EXAMPLES = frozenset({"fork_remoto.mp"})
+WEB_EXCLUDED_EXAMPLES = frozenset()
 TEST1_EXAMPLES = frozenset({"teste01_cliente.mp", "teste01_servidor.mp"})
 
 
@@ -190,6 +189,143 @@ def run_source(
             )
         except Exception as exc:
             return {"ok": False, "stdout": "", "stderr": str(exc), "returncode": None}
+
+
+def run_fork_remote(source: str, timeout: int = RUN_TIMEOUT_SECONDS) -> dict:
+    """Executa fork remoto em localhost iniciando e encerrando um worker temporário."""
+    ports = re.findall(
+        r'\bon\s+host\s+"127\.0\.0\.1"\s*,\s*(\d+)',
+        source,
+    )
+    if len(ports) != 1:
+        return {
+            "ok": False, "stdout": "",
+            "stderr": "O exemplo precisa declarar exatamente uma tarefa remota em 127.0.0.1 com uma porta explícita.",
+            "returncode": None, "stage": "input",
+        }
+    port = int(ports[0])
+    if not 1 <= port <= 65535:
+        return {"ok": False, "stdout": "", "stderr": "Porta do worker inválida.",
+                "returncode": None, "stage": "input"}
+
+    with tempfile.TemporaryDirectory(prefix="minipar-web-fork-") as temp:
+        work = Path(temp)
+        path = work / "fork_remoto.mp"
+        path.write_text(source, encoding="utf-8")
+        try:
+            build = build_executable(
+                str(path), out_dir=str(work / "build"),
+                timeout=COMPILE_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "stdout": "",
+                    "stderr": f"Compilação interrompida após {COMPILE_TIMEOUT_SECONDS} segundos.",
+                    "returncode": None, "timeout": True, "stage": "compile"}
+        except Exception as exc:
+            return {"ok": False, "stdout": "", "stderr": str(exc),
+                    "returncode": None, "stage": "compile"}
+
+        worker = None
+        worker_output = {"stdout": bytearray(), "stderr": bytearray()}
+        worker_state = {"total": 0, "limit": False}
+        lock = threading.Lock()
+        ready = threading.Event()
+        readers = []
+
+        def drain_worker(pipe, key):
+            marker = f"trabalhador aguardando tarefas na porta {port}".encode()
+            tail = b""
+            try:
+                while True:
+                    chunk = pipe.read(_OUTPUT_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    if key == "stderr" and marker in tail + chunk:
+                        ready.set()
+                    tail = (tail + chunk)[-max(len(marker), 64):]
+                    with lock:
+                        remaining = MAX_OUTPUT_BYTES - worker_state["total"]
+                        if remaining > 0:
+                            kept = chunk[:remaining]
+                            worker_output[key].extend(kept)
+                            worker_state["total"] += len(kept)
+                        if len(chunk) > max(remaining, 0):
+                            worker_state["limit"] = True
+            finally:
+                pipe.close()
+
+        try:
+            worker = subprocess.Popen(
+                [str(build.exe_path.resolve()), "--worker", str(port), "--worker-tasks", "1"],
+                cwd=work, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+                start_new_session=(os.name == "posix"),
+            )
+            readers = [
+                threading.Thread(target=drain_worker, args=(worker.stdout, "stdout"), daemon=True),
+                threading.Thread(target=drain_worker, args=(worker.stderr, "stderr"), daemon=True),
+            ]
+            for reader in readers:
+                reader.start()
+
+            if not ready.wait(timeout=3):
+                if worker.poll() is None:
+                    _stop_process_tree(worker)
+                    worker.wait()
+                for reader in readers:
+                    reader.join(timeout=2)
+                worker_err = bytes(worker_output["stderr"]).decode("utf-8", errors="replace")
+                detail = worker_err.strip() or f"O worker não abriu a porta {port} em 3 segundos."
+                return {"ok": False, "stdout": "", "stderr": detail,
+                        "returncode": worker.returncode, "stage": "worker"}
+
+            main_result = _run_bounded_process(
+                [str(build.exe_path.resolve())], work, timeout
+            )
+
+            worker_stopped = True
+            if main_result.get("timeout"):
+                worker_stopped = False
+            else:
+                try:
+                    worker.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    worker_stopped = False
+
+            if worker.poll() is None:
+                _stop_process_tree(worker)
+                worker.wait()
+            for reader in readers:
+                reader.join(timeout=2)
+
+            worker_out = bytes(worker_output["stdout"]).decode("utf-8", errors="replace")
+            worker_err = bytes(worker_output["stderr"]).decode("utf-8", errors="replace")
+            stdout = main_result.get("stdout", "")
+            if worker_out:
+                stdout = (stdout + "\n=== Worker remoto ===\n" + worker_out).strip()
+            stderr_parts = [part for part in (main_result.get("stderr", ""), worker_err) if part]
+            if not worker_stopped:
+                stderr_parts.append("O worker não encerrou normalmente após a tarefa remota.")
+            if worker_state["limit"]:
+                stderr_parts.append("A saída do worker ultrapassou o limite permitido.")
+            ok = (main_result.get("ok", False) and worker_stopped
+                  and worker.returncode == 0 and not worker_state["limit"])
+            return {
+                "ok": ok, "stdout": stdout, "stderr": "\n".join(stderr_parts),
+                "returncode": main_result.get("returncode"),
+                "worker_returncode": worker.returncode,
+                "timeout": main_result.get("timeout", False),
+                "output_limit": main_result.get("output_limit", False) or worker_state["limit"],
+            }
+        except Exception as exc:
+            return {"ok": False, "stdout": "", "stderr": str(exc),
+                    "returncode": None, "stage": "run"}
+        finally:
+            if worker is not None and worker.poll() is None:
+                _stop_process_tree(worker)
+                worker.wait()
+            for reader in readers:
+                reader.join(timeout=2)
 
 
 
@@ -401,7 +537,7 @@ class MiniParHandler(BaseHTTPRequestHandler):
         if not self._is_local_request():
             return self._json({"error": "Requisição cross-origin bloqueada."}, 403)
         path = urlparse(self.path).path
-        if path not in ("/api/analyze", "/api/run", "/api/run-test1"):
+        if path not in ("/api/analyze", "/api/run", "/api/run-test1", "/api/run-fork-remote"):
             return self._json({"error": "Rota não encontrada."}, 404)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -431,6 +567,7 @@ class MiniParHandler(BaseHTTPRequestHandler):
             try: return self._json(analyze_source(source))
             except Exception as exc: return self._json({"ok": False, "error": str(exc)}, 500)
         is_test1 = path == "/api/run-test1"
+        is_fork_remote = path == "/api/run-fork-remote"
         if is_test1:
             example = payload.get("example", "")
             if not isinstance(example, str) or example not in TEST1_EXAMPLES:
@@ -444,6 +581,8 @@ class MiniParHandler(BaseHTTPRequestHandler):
         try:
             if is_test1:
                 return self._json(run_test1(source, example, stdin_text=stdin_text))
+            if is_fork_remote:
+                return self._json(run_fork_remote(source))
             return self._json(run_source(source, stdin_text=stdin_text))
         finally:
             _RUN_SLOTS.release()
