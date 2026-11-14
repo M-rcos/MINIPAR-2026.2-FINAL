@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from minipar.webapp import analyze_source, run_source, _run_bounded_process
+from minipar.webapp import analyze_source, run_source, run_fork_remote, _run_bounded_process
 
 
 class WebAppServiceTests(unittest.TestCase):
@@ -19,7 +19,26 @@ class WebAppServiceTests(unittest.TestCase):
         self.assertIn("teste01_servidor.mp", TEST1_EXAMPLES)
         self.assertTrue(is_web_example("teste01_cliente.mp"))
         self.assertTrue(is_web_example("teste01_servidor.mp"))
-        self.assertFalse(is_web_example("fork_remoto.mp"))
+        self.assertTrue(is_web_example("fork_remoto.mp"))
+
+
+    def test_fork_remoto_inicia_worker_e_executa_tarefa_pela_web(self):
+        import socket
+        from minipar.webapp import EXAMPLES_DIR
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        source = (EXAMPLES_DIR / "fork_remoto.mp").read_text(encoding="utf-8")
+        source = source.replace('"127.0.0.1", 9000', f'"127.0.0.1", {port}')
+
+        result = run_fork_remote(source, timeout=10)
+
+        self.assertTrue(result["ok"], result["stderr"])
+        self.assertIn("Fatorial de 10 = 3628800", result["stdout"])
+        self.assertIn("Fibonacci: [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89]", result["stdout"])
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(result["worker_returncode"], 0)
 
     def test_pipeline_returns_all_compilation_stages(self):
         result = analyze_source('var numero = 7;\nprint("Resultado:", numero * 6);')
