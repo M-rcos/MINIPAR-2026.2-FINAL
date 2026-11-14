@@ -1368,11 +1368,12 @@ inline bool parse_args(int argc, char** argv, std::string& hosts_file) {
             return false;
         };
         if (a == "--help" || a == "-h") {
-            std::printf("Uso: %s [--node NOME] [--hosts ARQUIVO] [--worker PORTA [--worker-tasks N]]\n"
+            std::printf("Uso: %s [--node NOME] [--hosts ARQUIVO] [--worker PORTA [--worker-bind IP] [--worker-tasks N]]\n"
                         "  --node NOME        quem este programa é (ex.: computador_1)\n"
                         "  --hosts ARQUIVO    endereços dos computadores (padrão: minipar.hosts)\n"
                         "  --worker PORTA     modo trabalhador: executa tarefas enviadas por\n"
                         "                     'fork ... on host' de outro computador\n"
+                        "  --worker-bind IP    endereço local da escuta (padrão: 0.0.0.0)\n"
                         "  --worker-tasks N   o trabalhador encerra depois de N tarefas (padrão: sempre)\n",
                         argv[0]);
             return false;
