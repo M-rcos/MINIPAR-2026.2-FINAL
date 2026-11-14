@@ -13,12 +13,9 @@ from .pipeline import to_cpp
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR, EXAMPLES_DIR = ROOT / "web", ROOT / "exemplos"
-# Exemplos que dependem de comunicação entre processos/nós não são executados pela Web.
-WEB_EXCLUDED_EXAMPLES = frozenset({
-    "fork_remoto.mp",
-    "teste01_cliente.mp",
-    "teste01_servidor.mp",
-})
+# Fork remoto ainda não é orquestrado pela interface Web.
+WEB_EXCLUDED_EXAMPLES = frozenset({"fork_remoto.mp"})
+TEST1_EXAMPLES = frozenset({"teste01_cliente.mp", "teste01_servidor.mp"})
 
 
 def is_web_example(name: str) -> bool:
@@ -193,6 +190,146 @@ def run_source(
         except Exception as exc:
             return {"ok": False, "stdout": "", "stderr": str(exc), "returncode": None}
 
+
+
+def run_test1(source: str, example: str, stdin_text: str = "",
+              timeout: int = RUN_TIMEOUT_SECONDS) -> dict:
+    """Executa o Teste 1 localmente: servidor e cliente em processos separados."""
+    if example not in TEST1_EXAMPLES:
+        return {"ok": False, "stdout": "", "stderr": "Exemplo inválido para o Teste 1.",
+                "returncode": None, "stage": "run"}
+
+    client_path = EXAMPLES_DIR / "teste01_cliente.mp"
+    server_path = EXAMPLES_DIR / "teste01_servidor.mp"
+    try:
+        client_source = source if example == "teste01_cliente.mp" else client_path.read_text(encoding="utf-8")
+        server_source = source if example == "teste01_servidor.mp" else server_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {"ok": False, "stdout": "", "stderr": str(exc),
+                "returncode": None, "stage": "compile"}
+
+    server = None
+    readers = []
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    state = {"total": 0, "limit": False}
+    lock = threading.Lock()
+    ready = threading.Event()
+
+    with tempfile.TemporaryDirectory(prefix="minipar-web-teste1-") as temp:
+        work = Path(temp)
+        client_file = work / "teste01_cliente.mp"
+        server_file = work / "teste01_servidor.mp"
+        client_file.write_text(client_source, encoding="utf-8")
+        server_file.write_text(server_source, encoding="utf-8")
+        build_dir = work / "build"
+        try:
+            server_build = build_executable(str(server_file), out_dir=str(build_dir),
+                                            timeout=COMPILE_TIMEOUT_SECONDS)
+            client_build = build_executable(str(client_file), out_dir=str(build_dir),
+                                            timeout=COMPILE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "stdout": "",
+                    "stderr": f"Compilação do Teste 1 interrompida após {COMPILE_TIMEOUT_SECONDS} segundos.",
+                    "returncode": None, "timeout": True, "stage": "compile"}
+        except Exception as exc:
+            return {"ok": False, "stdout": "", "stderr": str(exc),
+                    "returncode": None, "stage": "compile"}
+
+        def drain(pipe, key):
+            tail = b""
+            try:
+                while True:
+                    chunk = pipe.read(_OUTPUT_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    if key == "stderr" and b"aguardando conex" in (tail + chunk):
+                        ready.set()
+                    tail = (tail + chunk)[-64:]
+                    with lock:
+                        remaining = MAX_OUTPUT_BYTES - state["total"]
+                        if remaining > 0:
+                            kept = chunk[:remaining]
+                            captured[key].extend(kept)
+                            state["total"] += len(kept)
+                        if len(chunk) > max(remaining, 0):
+                            state["limit"] = True
+                    if state["limit"] and server is not None:
+                        _stop_process_tree(server)
+            finally:
+                pipe.close()
+
+        try:
+            server = subprocess.Popen(
+                [str(server_build.exe_path.resolve()), "--node", "computador_2"],
+                cwd=work, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+                start_new_session=(os.name == "posix"),
+            )
+            readers = [
+                threading.Thread(target=drain, args=(server.stdout, "stdout"), daemon=True),
+                threading.Thread(target=drain, args=(server.stderr, "stderr"), daemon=True),
+            ]
+            for reader in readers:
+                reader.start()
+
+            # O servidor abre o socket ao chegar ao primeiro receive().
+            ready.wait(timeout=2)
+            if server.poll() is not None:
+                for reader in readers:
+                    reader.join()
+                server_out = bytes(captured["stdout"]).decode("utf-8", errors="replace")
+                server_err = bytes(captured["stderr"]).decode("utf-8", errors="replace")
+                return {"ok": False, "stdout": "=== Servidor ===\n" + server_out,
+                        "stderr": server_err or "O servidor encerrou antes de aceitar o cliente.",
+                        "returncode": server.returncode, "stage": "server"}
+
+            client_result = _run_bounded_process(
+                [str(client_build.exe_path.resolve()), "--node", "computador_1"],
+                work, timeout, stdin_text=stdin_text,
+            )
+
+            server_stopped = True
+            if client_result.get("timeout"):
+                _stop_process_tree(server)
+            else:
+                try:
+                    server.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    server_stopped = False
+                    _stop_process_tree(server)
+            if server.poll() is None:
+                server.wait()
+        except Exception as exc:
+            if server is not None and server.poll() is None:
+                _stop_process_tree(server)
+                server.wait()
+            return {"ok": False, "stdout": "", "stderr": str(exc),
+                    "returncode": None, "stage": "run"}
+        finally:
+            for reader in readers:
+                reader.join(timeout=2)
+
+        server_out = bytes(captured["stdout"]).decode("utf-8", errors="replace")
+        server_err = bytes(captured["stderr"]).decode("utf-8", errors="replace")
+        client_out = client_result.get("stdout", "")
+        client_err = client_result.get("stderr", "")
+        stdout = "=== Servidor ===\n" + (server_out or "(sem saída)") + \
+                 "\n=== Cliente ===\n" + (client_out or "(sem saída)")
+        stderr_parts = [part for part in (server_err, client_err) if part]
+        if not server_stopped:
+            stderr_parts.append("O servidor não encerrou após a execução do cliente.")
+        if state["limit"]:
+            stderr_parts.append(f"Saída total interrompida no limite de {MAX_OUTPUT_BYTES // 1024} KiB.")
+        server_ok = server.returncode == 0
+        ok = client_result.get("ok", False) and server_ok and server_stopped and not state["limit"]
+        return {
+            "ok": ok, "stdout": stdout, "stderr": "\n".join(stderr_parts),
+            "returncode": client_result.get("returncode"),
+            "server_returncode": server.returncode,
+            "timeout": client_result.get("timeout", False),
+            "output_limit": state["limit"],
+        }
+
 class MiniParHandler(BaseHTTPRequestHandler):
     def _is_local_request(self):
         """Aceita apenas chamadas same-origin feitas pelo host local."""
@@ -259,7 +396,7 @@ class MiniParHandler(BaseHTTPRequestHandler):
         if not self._is_local_request():
             return self._json({"error": "Requisição cross-origin bloqueada."}, 403)
         path = urlparse(self.path).path
-        if path not in ("/api/analyze", "/api/run"):
+        if path not in ("/api/analyze", "/api/run", "/api/run-test1"):
             return self._json({"error": "Rota não encontrada."}, 404)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -288,9 +425,15 @@ class MiniParHandler(BaseHTTPRequestHandler):
         if path == "/api/analyze":
             try: return self._json(analyze_source(source))
             except Exception as exc: return self._json({"ok": False, "error": str(exc)}, 500)
+        if path == "/api/run-test1":
+            example = payload.get("example", "")
+            if not isinstance(example, str) or example not in TEST1_EXAMPLES:
+                return self._json({"error": "Selecione um dos programas do Teste 1."}, 400)
         if not _RUN_SLOTS.acquire(blocking=False):
             return self._json({"ok": False, "error": "Limite de execuções simultâneas atingido. Tente novamente."}, 429)
         try:
+            if path == "/api/run-test1":
+                return self._json(run_test1(source, example, stdin_text=stdin_text))
             return self._json(run_source(source, stdin_text=stdin_text))
         finally:
             _RUN_SLOTS.release()
