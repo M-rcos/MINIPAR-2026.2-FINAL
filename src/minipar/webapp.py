@@ -30,6 +30,7 @@ MAX_CONCURRENT_RUNS = 2
 MAX_OUTPUT_BYTES = 1024 * 1024
 _OUTPUT_CHUNK_BYTES = 8192
 _RUN_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_RUNS)
+_TEST1_SLOT = threading.BoundedSemaphore(1)
 
 def analyze_source(source: str) -> dict:
     """Executa as fases em ordem e devolve dados serializáveis para a UI."""
@@ -198,6 +199,10 @@ def run_test1(source: str, example: str, stdin_text: str = "",
     if example not in TEST1_EXAMPLES:
         return {"ok": False, "stdout": "", "stderr": "Exemplo inválido para o Teste 1.",
                 "returncode": None, "stage": "run"}
+    if not any(line.strip() == "sair" for line in stdin_text.splitlines()):
+        return {"ok": False, "stdout": "",
+                "stderr": "Inclua 'sair' em uma linha da entrada para encerrar a comunicação.",
+                "returncode": None, "stage": "input"}
 
     client_path = EXAMPLES_DIR / "teste01_cliente.mp"
     server_path = EXAMPLES_DIR / "teste01_servidor.mp"
@@ -425,18 +430,25 @@ class MiniParHandler(BaseHTTPRequestHandler):
         if path == "/api/analyze":
             try: return self._json(analyze_source(source))
             except Exception as exc: return self._json({"ok": False, "error": str(exc)}, 500)
-        if path == "/api/run-test1":
+        is_test1 = path == "/api/run-test1"
+        if is_test1:
             example = payload.get("example", "")
             if not isinstance(example, str) or example not in TEST1_EXAMPLES:
                 return self._json({"error": "Selecione um dos programas do Teste 1."}, 400)
+            if not _TEST1_SLOT.acquire(blocking=False):
+                return self._json({"ok": False, "error": "O Teste 1 já está em execução. Aguarde terminar."}, 429)
         if not _RUN_SLOTS.acquire(blocking=False):
+            if is_test1:
+                _TEST1_SLOT.release()
             return self._json({"ok": False, "error": "Limite de execuções simultâneas atingido. Tente novamente."}, 429)
         try:
-            if path == "/api/run-test1":
+            if is_test1:
                 return self._json(run_test1(source, example, stdin_text=stdin_text))
             return self._json(run_source(source, stdin_text=stdin_text))
         finally:
             _RUN_SLOTS.release()
+            if is_test1:
+                _TEST1_SLOT.release()
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Interface Web local do MiniPar 2026.2")
