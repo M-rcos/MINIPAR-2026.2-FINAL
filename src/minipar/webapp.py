@@ -14,6 +14,8 @@ from .pipeline import to_cpp
 ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR, EXAMPLES_DIR = ROOT / "web", ROOT / "exemplos"
 MAX_SOURCE_BYTES = 128 * 1024
+MAX_STDIN_BYTES = 64 * 1024
+MAX_REQUEST_BYTES = 2 * (MAX_SOURCE_BYTES + MAX_STDIN_BYTES) + 4096
 COMPILE_TIMEOUT_SECONDS = 20
 RUN_TIMEOUT_SECONDS = 10
 MAX_CONCURRENT_RUNS = 2
@@ -75,10 +77,13 @@ def _stop_process_tree(proc: subprocess.Popen) -> None:
             pass
 
 
-def _run_bounded_process(command: list[str], cwd: Path, timeout: int) -> dict:
-    """Executa drenando os dois pipes e limitando a saída total em bytes."""
+def _run_bounded_process(
+    command: list[str], cwd: Path, timeout: int, stdin_text: str = ""
+) -> dict:
+    """Executa com stdin pré-carregado, drenando a saída e limitando seus bytes."""
     proc = subprocess.Popen(
-        command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        command, cwd=cwd, stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         bufsize=0, start_new_session=(os.name == "posix"),
     )
     captured = {"stdout": bytearray(), "stderr": bytearray()}
@@ -104,12 +109,26 @@ def _run_bounded_process(command: list[str], cwd: Path, timeout: int) -> dict:
         finally:
             pipe.close()
 
+    def feed_stdin():
+        try:
+            if proc.stdin is not None:
+                proc.stdin.write(stdin_text.encode("utf-8"))
+                proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            # O programa pode terminar sem consumir toda a entrada.
+            pass
+        finally:
+            if proc.stdin is not None:
+                proc.stdin.close()
+
     readers = [
         threading.Thread(target=drain, args=(proc.stdout, "stdout"), daemon=True),
         threading.Thread(target=drain, args=(proc.stderr, "stderr"), daemon=True),
     ]
     for reader in readers:
         reader.start()
+    stdin_writer = threading.Thread(target=feed_stdin, daemon=True)
+    stdin_writer.start()
 
     timed_out = False
     try:
@@ -119,6 +138,7 @@ def _run_bounded_process(command: list[str], cwd: Path, timeout: int) -> dict:
         _stop_process_tree(proc)
         proc.wait()
 
+    stdin_writer.join()
     for reader in readers:
         reader.join()
 
@@ -137,8 +157,10 @@ def _run_bounded_process(command: list[str], cwd: Path, timeout: int) -> dict:
             "stderr": stderr, "returncode": proc.returncode}
 
 
-def run_source(source: str, timeout: int = RUN_TIMEOUT_SECONDS) -> dict:
-    """Compila e executa em pasta temporária, limitando o tempo de execução."""
+def run_source(
+    source: str, timeout: int = RUN_TIMEOUT_SECONDS, stdin_text: str = ""
+) -> dict:
+    """Compila e executa em pasta temporária, com entrada stdin opcional."""
     with tempfile.TemporaryDirectory(prefix="minipar-web-") as temp:
         work = Path(temp)
         path = work / "programa.mp"
@@ -155,7 +177,7 @@ def run_source(source: str, timeout: int = RUN_TIMEOUT_SECONDS) -> dict:
                     "returncode": None, "stage": "compile"}
         try:
             return _run_bounded_process(
-                [str(build.exe_path.resolve())], work, timeout
+                [str(build.exe_path.resolve())], work, timeout, stdin_text=stdin_text
             )
         except Exception as exc:
             return {"ok": False, "stdout": "", "stderr": str(exc), "returncode": None}
@@ -232,13 +254,22 @@ class MiniParHandler(BaseHTTPRequestHandler):
             return self._json({"error": "Cabeçalho Content-Length inválido."}, 400)
         if length <= 0:
             return self._json({"error": "O corpo da requisição está vazio."}, 400)
-        if length > MAX_SOURCE_BYTES:
-            return self._json({"error": "Envie código com até 128 KiB."}, 413)
+        if length > MAX_REQUEST_BYTES:
+            return self._json({"error": "Requisição muito grande. Limite de código: 128 KiB; entrada: 64 KiB."}, 413)
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("O corpo da requisição deve ser um objeto JSON.")
             source = payload.get("source", "")
+            stdin_text = payload.get("stdin", "")
             if not isinstance(source, str):
                 raise ValueError("O campo 'source' deve ser texto.")
+            if not isinstance(stdin_text, str):
+                raise ValueError("O campo 'stdin' deve ser texto.")
+            if len(source.encode("utf-8")) > MAX_SOURCE_BYTES:
+                return self._json({"error": "Envie código com até 128 KiB."}, 413)
+            if len(stdin_text.encode("utf-8")) > MAX_STDIN_BYTES:
+                return self._json({"error": "A entrada do programa deve ter até 64 KiB."}, 413)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             return self._json({"error": str(exc)}, 400)
         if path == "/api/analyze":
@@ -247,7 +278,7 @@ class MiniParHandler(BaseHTTPRequestHandler):
         if not _RUN_SLOTS.acquire(blocking=False):
             return self._json({"ok": False, "error": "Limite de execuções simultâneas atingido. Tente novamente."}, 429)
         try:
-            return self._json(run_source(source))
+            return self._json(run_source(source, stdin_text=stdin_text))
         finally:
             _RUN_SLOTS.release()
 
