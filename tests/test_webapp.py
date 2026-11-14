@@ -12,6 +12,15 @@ from minipar.webapp import analyze_source, run_source, _run_bounded_process
 
 
 class WebAppServiceTests(unittest.TestCase):
+    def test_test1_examples_are_available_but_remote_fork_is_hidden(self):
+        from minipar.webapp import is_web_example, TEST1_EXAMPLES
+
+        self.assertIn("teste01_cliente.mp", TEST1_EXAMPLES)
+        self.assertIn("teste01_servidor.mp", TEST1_EXAMPLES)
+        self.assertTrue(is_web_example("teste01_cliente.mp"))
+        self.assertTrue(is_web_example("teste01_servidor.mp"))
+        self.assertFalse(is_web_example("fork_remoto.mp"))
+
     def test_pipeline_returns_all_compilation_stages(self):
         result = analyze_source('var numero = 7;\nprint("Resultado:", numero * 6);')
         self.assertTrue(result["ok"], result["errors"])
