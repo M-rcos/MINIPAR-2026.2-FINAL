@@ -13,6 +13,17 @@ from .pipeline import to_cpp
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR, EXAMPLES_DIR = ROOT / "web", ROOT / "exemplos"
+# Exemplos que dependem de comunicação entre processos/nós não são executados pela Web.
+WEB_EXCLUDED_EXAMPLES = frozenset({
+    "fork_remoto.mp",
+    "teste01_cliente.mp",
+    "teste01_servidor.mp",
+})
+
+
+def is_web_example(name: str) -> bool:
+    """Informa se um exemplo pode ser disponibilizado pela interface Web."""
+    return name not in WEB_EXCLUDED_EXAMPLES
 MAX_SOURCE_BYTES = 128 * 1024
 MAX_STDIN_BYTES = 64 * 1024
 MAX_REQUEST_BYTES = 6 * (MAX_SOURCE_BYTES + MAX_STDIN_BYTES) + 4096
@@ -232,12 +243,14 @@ class MiniParHandler(BaseHTTPRequestHandler):
         if path in static:
             name, kind = static[path]; return self._file(WEB_DIR / name, kind)
         if path == "/api/examples":
-            return self._json({"examples": [p.name for p in sorted(EXAMPLES_DIR.glob("*.mp"))]})
+            return self._json({"examples": [p.name for p in sorted(EXAMPLES_DIR.glob("*.mp")) if is_web_example(p.name)]})
         if path.startswith("/api/examples/"):
             name = unquote(path.removeprefix("/api/examples/"))
             candidate = (EXAMPLES_DIR / name).resolve()
             if candidate.parent != EXAMPLES_DIR.resolve() or candidate.suffix != ".mp":
                 return self._json({"error": "Exemplo inválido."}, 400)
+            if not is_web_example(name):
+                return self._json({"error": "Exemplo não disponível na interface Web."}, 404)
             if not candidate.is_file():
                 return self._json({"error": "Exemplo não encontrado."}, 404)
             return self._json({"source": candidate.read_text(encoding="utf-8")})
