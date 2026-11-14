@@ -256,7 +256,7 @@ def run_fork_remote(source: str, timeout: int = RUN_TIMEOUT_SECONDS) -> dict:
 
         try:
             worker = subprocess.Popen(
-                [str(build.exe_path.resolve()), "--worker", str(port), "--worker-tasks", "1"],
+                [str(build.exe_path.resolve()), "--worker", str(port), "--worker-bind", "127.0.0.1", "--worker-tasks", "1"],
                 cwd=work, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
                 start_new_session=(os.name == "posix"),
