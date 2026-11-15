@@ -450,6 +450,7 @@ struct Config {
     std::map<std::string, int> ports;                // canal -> porta
     double timeout = 120.0;                          // segundos para conectar/aguardar
     int worker_port = 0;                             // > 0: executa como trabalhador remoto
+    std::string worker_bind = "0.0.0.0";             // endereço local da escuta do worker
     int worker_tasks = 0;                            // trabalhador encerra após N tarefas (0 = sempre)
 };
 
@@ -590,7 +591,7 @@ inline sock_t tcp_connect(const std::string& host, int port, double timeout) {
 }
 
 // Abre a porta para receber conexões.
-inline sock_t open_listener(int port) {
+inline sock_t open_listener(int port, const std::string& bind_host = "0.0.0.0") {
     net_init();
     sock_t ls = ::socket(AF_INET, SOCK_STREAM, 0);
     if (ls == BAD_SOCK) fail("Não foi possível criar o socket");
@@ -599,7 +600,10 @@ inline sock_t open_listener(int port) {
     sockaddr_in addr;
     std::memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (::inet_pton(AF_INET, bind_host.c_str(), &addr.sin_addr) != 1) {
+        close_socket(ls);
+        fail("Endereço inválido para abrir a porta: " + bind_host);
+    }
     addr.sin_port = htons(static_cast<unsigned short>(port));
     if (::bind(ls, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0 || ::listen(ls, 16) != 0) {
         close_socket(ls);
@@ -1267,8 +1271,8 @@ inline void handle_worker_connection(sock_t s) {
 }
 
 // Modo trabalhador: atende pedidos de execução de tarefas.
-inline void serve_worker(int port, int max_tasks) {
-    sock_t ls = open_listener(port);
+inline void serve_worker(int port, int max_tasks, const std::string& bind_host = "0.0.0.0") {
+    sock_t ls = open_listener(port, bind_host);
     net_log("trabalhador aguardando tarefas na porta " + std::to_string(port) + " ...");
     std::vector<std::thread> handlers;
     int served = 0;
@@ -1364,11 +1368,12 @@ inline bool parse_args(int argc, char** argv, std::string& hosts_file) {
             return false;
         };
         if (a == "--help" || a == "-h") {
-            std::printf("Uso: %s [--node NOME] [--hosts ARQUIVO] [--worker PORTA [--worker-tasks N]]\n"
+            std::printf("Uso: %s [--node NOME] [--hosts ARQUIVO] [--worker PORTA [--worker-bind IP] [--worker-tasks N]]\n"
                         "  --node NOME        quem este programa é (ex.: computador_1)\n"
                         "  --hosts ARQUIVO    endereços dos computadores (padrão: minipar.hosts)\n"
                         "  --worker PORTA     modo trabalhador: executa tarefas enviadas por\n"
                         "                     'fork ... on host' de outro computador\n"
+                        "  --worker-bind IP    endereço local da escuta (padrão: 0.0.0.0)\n"
                         "  --worker-tasks N   o trabalhador encerra depois de N tarefas (padrão: sempre)\n",
                         argv[0]);
             return false;
@@ -1377,6 +1382,7 @@ inline bool parse_args(int argc, char** argv, std::string& hosts_file) {
         if (value_of("--node", config().node)) continue;
         if (value_of("--hosts", hosts_file)) continue;
         if (value_of("--worker", tmp)) { config().worker_port = std::atoi(tmp.c_str()); continue; }
+        if (value_of("--worker-bind", config().worker_bind)) continue;
         if (value_of("--worker-tasks", tmp)) { config().worker_tasks = std::atoi(tmp.c_str()); continue; }
     }
     return true;
@@ -1396,7 +1402,7 @@ inline int run_program(int argc, char** argv, const std::function<void()>& init,
         if (!hosts_file.empty()) load_hosts_file(hosts_file, true);
         else load_hosts_file("minipar.hosts", false);
         init();
-        if (config().worker_port > 0) serve_worker(config().worker_port, config().worker_tasks);
+        if (config().worker_port > 0) serve_worker(config().worker_port, config().worker_tasks, config().worker_bind);
         else entry();
     } catch (const std::exception& e) {
         std::fflush(stdout);

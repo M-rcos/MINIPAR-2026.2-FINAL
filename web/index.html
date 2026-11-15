@@ -11,7 +11,7 @@
 <div class="editor-actions"><label for="examples">Exemplos</label><select id="examples"><option value="">Escolha um programa…</option></select><button id="reset" class="ghost">Limpar</button></div>
 <textarea id="source" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Código fonte MiniPar">var numero = 7;
 print("Resultado:", numero * 6);
-</textarea><div class="editor-foot"><span id="line-count">2 linhas</span><span>MiniPar 2026.2</span></div>
+</textarea><div id="stdin-panel" class="stdin-panel" hidden><label id="stdin-label" for="stdin">Entrada do programa (stdin)</label><textarea id="stdin" class="stdin-input" rows="4" spellcheck="false" placeholder="Digite aqui os dados que o programa solicitar…"></textarea><p id="stdin-hint" class="stdin-hint">A entrada é enviada ao iniciar a execução. Para vários input(), informe um valor por linha.</p></div><div class="editor-foot"><span id="line-count">2 linhas</span><span>MiniPar 2026.2</span></div>
 <div class="action-row"><button id="analyze" class="primary">▶ Analisar programa</button><button id="run" class="secondary">Executar</button></div>
 <p class="hint">A execução compila com GCC em uma pasta temporária. O servidor local precisa de Python 3 e GCC.</p></aside>
 <section class="results-panel"><div class="panel-head result-heading"><div><span class="kicker">02 / INSPEÇÃO</span><h2>Pipeline do compilador</h2></div><span id="overall-status" class="status idle">Aguardando análise</span></div>
